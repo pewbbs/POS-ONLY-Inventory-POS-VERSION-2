@@ -114,7 +114,7 @@
             @endif
         @endif
     </section>
-    <footer>© {{ now()->year }} POSONLY <span>Keep your business moving.</span></footer>
+    <footer>© {{ now()->year }} POSONLY <a href="{{ route('privacy') }}">Privacy policy</a><span>Keep your business moving.</span></footer>
 </main>
 <script>
     document.querySelector('.show-password')?.addEventListener('click', function () {

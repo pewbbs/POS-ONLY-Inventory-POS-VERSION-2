@@ -30,6 +30,7 @@ require __DIR__.'/social-auth.php';
 
 Route::get('/', [SiteContentController::class, 'home'])->name('home');
 Route::view('/guide', 'guide')->name('guide');
+Route::view('/privacy', 'privacy')->name('privacy');
 Route::get('/health', [WorkspaceController::class, 'health'])->middleware('throttle:30,1');
 Route::post('/events', [AnalyticsController::class, 'store'])->middleware('throttle:30,1');
 Route::post('/webhooks/paymongo/test', PayMongoWebhookController::class)->middleware('throttle:120,1,paymongo-webhook:')->name('paymongo.test.webhook');

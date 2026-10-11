@@ -42,6 +42,32 @@ class SiteContentTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_privacy_policy_is_public_and_explains_google_account_data(): void
+    {
+        Http::preventStrayRequests();
+
+        $response = $this->get('/privacy');
+
+        $response->assertOk()->assertViewIs('privacy')
+            ->assertSeeText('Google sign-in')
+            ->assertSeeText('Pablito Torres, trading as POSONLY')
+            ->assertSee('mailto:pewbbs@gmail.com', false);
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['/'])]
+    #[TestWith(['/login'])]
+    #[TestWith(['/register'])]
+    public function test_public_entry_pages_link_to_the_privacy_policy(string $path): void
+    {
+        Http::preventStrayRequests();
+
+        $response = $this->get($path);
+
+        $response->assertOk()->assertSee('href="'.route('privacy').'"', false);
+        Http::assertNothingSent();
+    }
+
     public function test_draft_is_private_until_published_and_both_mutations_are_audited(): void
     {
         $admin = $this->developer();
