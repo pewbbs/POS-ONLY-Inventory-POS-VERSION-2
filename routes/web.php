@@ -18,12 +18,14 @@ use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\ReorderRuleController;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SalesAnalyticsController;
+use App\Http\Controllers\SeoController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\SiteContentController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\TeamController;
 use App\Http\Controllers\WorkspaceController;
 use App\Services\PayMongoClient;
+use App\Services\SeoService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Route;
 
@@ -31,8 +33,10 @@ require __DIR__.'/developer.php';
 require __DIR__.'/social-auth.php';
 
 Route::get('/', [SiteContentController::class, 'home'])->name('home');
-Route::get('/guide', fn (PayMongoClient $payments): View => view('guide', ['paymentConfig' => $payments->configuration()]))->name('guide');
-Route::get('/privacy', fn (PayMongoClient $payments): View => view('privacy', ['paymentConfig' => $payments->configuration()]))->name('privacy');
+Route::get('/guide', fn (PayMongoClient $payments, SeoService $seo): View => view('guide', ['paymentConfig' => $payments->configuration(), 'seo' => $seo->metadata('/guide')]))->name('guide');
+Route::get('/privacy', fn (PayMongoClient $payments, SeoService $seo): View => view('privacy', ['paymentConfig' => $payments->configuration(), 'seo' => $seo->metadata('/privacy')]))->name('privacy');
+Route::get('/sitemap.xml', [SeoController::class, 'sitemap'])->name('seo.sitemap');
+Route::get('/robots.txt', [SeoController::class, 'robots'])->name('seo.robots');
 Route::get('/health', [WorkspaceController::class, 'health'])->middleware('throttle:30,1');
 Route::post('/events', [AnalyticsController::class, 'store'])->middleware('throttle:30,1');
 Route::post('/webhooks/paymongo/test', PayMongoWebhookController::class)->middleware('throttle:120,1,paymongo-webhook:')->name('paymongo.test.webhook');

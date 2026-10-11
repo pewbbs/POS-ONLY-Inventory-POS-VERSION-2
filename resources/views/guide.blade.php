@@ -8,8 +8,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="The POSONLY staff guide. Simple instructions for selling, receiving stock, managing products, and keeping your business in sync.">
-    <title>Staff guide — POSONLY</title>
+    @include('partials.public-metadata', ['seo' => $seo ?? [], 'seoTitle' => 'POSONLY User Guide | Inventory & POS Handbook', 'seoDescription' => 'Learn how to use POSONLY for checkout, inventory, variants, purchasing, reports, teams, receipts, and subscription billing.', 'seoHome' => false])
     <link rel="stylesheet" href="{{ asset('css/fonts.css') }}">
     <link rel="stylesheet" href="{{ asset('css/guide.css') }}">
 </head>

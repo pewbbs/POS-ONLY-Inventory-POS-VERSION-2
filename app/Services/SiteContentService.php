@@ -14,8 +14,8 @@ class SiteContentService
     public function defaults(): array
     {
         return [
-            'site_title' => 'POSONLY — Less admin. More selling.',
-            'meta_description' => 'POSONLY connects your inventory, point of sale, and daily reports in one simple workspace. Less admin. More selling.',
+            'site_title' => 'POSONLY | Cloud Inventory & POS System in the Philippines',
+            'meta_description' => 'Cloud inventory management and POS for Philippine businesses. Track stock, process sales, manage variants and locations, and review sales reports with POSONLY.',
             'hero_kicker' => 'CLOUD INVENTORY + POINT OF SALE',
             'hero_title_line1' => 'LESS ADMIN.',
             'hero_title_line2' => 'MORE SELLING.',

@@ -42,6 +42,93 @@ class SiteContentTest extends TestCase
         Http::assertNothingSent();
     }
 
+    #[TestWith(['/', 'POSONLY | Cloud Inventory & POS System in the Philippines'])]
+    #[TestWith(['/guide', 'POSONLY User Guide | Inventory & POS Handbook'])]
+    #[TestWith(['/privacy', 'Privacy Policy | POSONLY'])]
+    public function test_public_metadata_matches_its_page_and_has_no_unavailable_social_image(string $path, string $title): void
+    {
+        Http::preventStrayRequests();
+        config(['app.url' => 'https://posonly.example']);
+
+        $response = $this->get($path)->assertOk();
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $xpath = new DOMXPath($document);
+
+        $this->assertCount(1, $xpath->query('//head/title'));
+        $this->assertSame($title, $xpath->evaluate('string(//head/title)'));
+        $this->assertSame($title, $xpath->evaluate('string(//meta[@property="og:title"]/@content)'));
+        $this->assertSame($title, $xpath->evaluate('string(//meta[@name="twitter:title"]/@content)'));
+        $description = $xpath->evaluate('string(//meta[@name="description"]/@content)');
+        $this->assertNotEmpty($description);
+        $this->assertSame($description, $xpath->evaluate('string(//meta[@property="og:description"]/@content)'));
+        $this->assertSame($description, $xpath->evaluate('string(//meta[@name="twitter:description"]/@content)'));
+        $this->assertSame('https://posonly.example'.$path, $xpath->evaluate('string(//link[@rel="canonical"]/@href)'));
+        $this->assertSame('summary', $xpath->evaluate('string(//meta[@name="twitter:card"]/@content)'));
+        $this->assertCount(0, $xpath->query('//meta[@property="og:image"] | //meta[@name="twitter:image"]'));
+        $this->assertSame('/images/favicon.png', $xpath->evaluate('string(//link[@rel="icon"]/@href)'));
+        Http::assertNothingSent();
+    }
+
+    public function test_homepage_structured_data_identifies_only_the_real_site_and_verified_logo(): void
+    {
+        Http::preventStrayRequests();
+        config(['app.url' => 'https://posonly.example']);
+
+        $response = $this->get('/')->assertOk()->assertSeeText('Cloud inventory and POS for Philippine businesses.');
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $scripts = (new DOMXPath($document))->query('//script[@type="application/ld+json"]');
+
+        $this->assertCount(1, $scripts);
+        $data = json_decode($scripts->item(0)->textContent, true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame('https://schema.org', $data['@context']);
+        $this->assertSame(['Organization', 'WebSite'], array_column($data['@graph'], '@type'));
+        $this->assertSame('POSONLY', $data['@graph'][0]['name']);
+        $this->assertSame('https://posonly.example/', $data['@graph'][1]['url']);
+        $this->assertSame('https://posonly.example/images/favicon.png', $data['@graph'][0]['logo']['url']);
+        $this->assertSame(192, $data['@graph'][0]['logo']['width']);
+        $this->assertSame(192, $data['@graph'][0]['logo']['height']);
+        $response->assertDontSee('aggregateRating')->assertDontSee('SoftwareApplication');
+        Http::assertNothingSent();
+    }
+
+    public function test_custom_published_metadata_is_preserved_and_cannot_end_its_json_script(): void
+    {
+        Http::preventStrayRequests();
+        config(['app.url' => 'https://posonly.example']);
+        $title = 'A company-approved title & description';
+        $description = 'Owner text </script><script id="metadata-injection">alert("x")</script> & details';
+        SiteContent::factory()->create(['published' => $this->content(['site_title' => $title, 'meta_description' => $description])]);
+
+        $response = $this->get('/')->assertOk();
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $xpath = new DOMXPath($document);
+        $data = json_decode($xpath->query('//script[@type="application/ld+json"]')->item(0)->textContent, true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame($title, $xpath->evaluate('string(//head/title)'));
+        $this->assertSame($description, $xpath->evaluate('string(//meta[@name="description"]/@content)'));
+        $this->assertSame($description, $data['@graph'][1]['description']);
+        $this->assertCount(0, $xpath->query('//script[@id="metadata-injection"]'));
+        Http::assertNothingSent();
+    }
+
+    public function test_private_cms_preview_cannot_publish_canonical_or_structured_site_data(): void
+    {
+        Http::preventStrayRequests();
+        config(['app.url' => 'https://posonly.example']);
+
+        $response = $this->actingAs($this->developer(), 'developer')->get('/developer/content/preview')->assertOk();
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $xpath = new DOMXPath($document);
+
+        $this->assertSame('noindex, nofollow', $xpath->evaluate('string(//meta[@name="robots"]/@content)'));
+        $this->assertCount(0, $xpath->query('//link[@rel="canonical"] | //meta[@property="og:url"] | //script[@type="application/ld+json"]'));
+        Http::assertNothingSent();
+    }
+
     public function test_privacy_policy_is_public_and_explains_google_account_data(): void
     {
         Http::preventStrayRequests();

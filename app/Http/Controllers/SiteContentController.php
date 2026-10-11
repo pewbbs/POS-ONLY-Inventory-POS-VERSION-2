@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\PayMongoClient;
+use App\Services\SeoService;
 use App\Services\SiteContentService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
@@ -10,14 +11,14 @@ use Illuminate\Http\Request;
 
 class SiteContentController extends Controller
 {
-    public function home(SiteContentService $content, PayMongoClient $payments): View
+    public function home(SiteContentService $content, PayMongoClient $payments, SeoService $seo): View
     {
-        return view('landing', ['site' => $content->state()['published'], 'plans' => config('billing.plans'), 'draftPreview' => false, 'paymentConfig' => $payments->configuration()]);
+        return view('landing', ['site' => $content->state()['published'], 'plans' => config('billing.plans'), 'draftPreview' => false, 'paymentConfig' => $payments->configuration(), 'seo' => $seo->metadata('/')]);
     }
 
-    public function preview(SiteContentService $content, PayMongoClient $payments): View
+    public function preview(SiteContentService $content, PayMongoClient $payments, SeoService $seo): View
     {
-        return view('landing', ['site' => $content->state()['draft'], 'plans' => config('billing.plans'), 'draftPreview' => true, 'paymentConfig' => $payments->configuration()]);
+        return view('landing', ['site' => $content->state()['draft'], 'plans' => config('billing.plans'), 'draftPreview' => true, 'paymentConfig' => $payments->configuration(), 'seo' => $seo->metadata('/developer/content/preview')]);
     }
 
     public function show(SiteContentService $content): JsonResponse

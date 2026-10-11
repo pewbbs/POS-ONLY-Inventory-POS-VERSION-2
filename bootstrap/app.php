@@ -6,7 +6,9 @@ use App\Http\Middleware\EnsureSubscriptionAccess;
 use App\Http\Middleware\EnsureTenantAccess;
 use App\Http\Middleware\RequireDeveloper;
 use App\Http\Middleware\RequireRole;
+use App\Http\Middleware\SeoHeaders;
 use App\Services\MonitoringService;
+use App\Services\SeoService;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -24,6 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(DeveloperSession::class);
+        $middleware->prepend(SeoHeaders::class);
         $middleware->alias(['role' => RequireRole::class, 'tenant' => EnsureTenantAccess::class, 'audit' => AuditSuccessfulMutation::class, 'subscribed' => EnsureSubscriptionAccess::class, 'developer' => RequireDeveloper::class]);
         $middleware->redirectGuestsTo(fn (Request $request): string => $request->is('developer', 'developer/*', 'api/developer', 'api/developer/*') ? '/developer/login' : '/login');
         $middleware->preventRequestForgery(except: ['webhooks/paymongo', 'webhooks/paymongo/test']);
@@ -31,6 +34,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->dontReportDuplicates();
         $exceptions->respond(function (Response $response): Response {
+            $response = app(SeoService::class)->applyHeaders(request(), $response);
             if (request()->is('developer', 'developer/*', 'api/developer', 'api/developer/*', 'auth/*', 'account/connections', 'account/connections/*')) {
                 $response->headers->set('Cache-Control', 'no-store, private');
                 $response->headers->set('Referrer-Policy', 'no-referrer');

@@ -3,10 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="How POSONLY uses and protects account, Google sign-in, business, and website information.">
+    @include('partials.public-metadata', ['seo' => $seo ?? [], 'seoTitle' => 'Privacy Policy | POSONLY', 'seoDescription' => 'Read how POSONLY handles account and business data, Google sign-in, subscription payments, cookies, security, and privacy requests.', 'seoHome' => false])
     <meta name="referrer" content="no-referrer">
-    <title>Privacy policy — POSONLY</title>
-    <link rel="icon" href="{{ asset('images/favicon.svg') }}">
     <link rel="stylesheet" href="{{ asset('css/fonts.css') }}">
     <link rel="stylesheet" href="{{ asset('css/guide.css') }}">
 </head>

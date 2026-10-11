@@ -9,10 +9,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <meta name="description" content="{{ $site['meta_description'] }}">
+    @include('partials.public-metadata', ['seo' => $seo ?? [], 'seoTitle' => $site['site_title'], 'seoDescription' => $site['meta_description'], 'seoHome' => ! $draftPreview])
     <meta name="theme-color" content="#f5f3ef">
-    <title>{{ $site['site_title'] }}</title>
-    <link rel="icon" type="image/svg+xml" href="/images/favicon.svg">
     <link rel="preload" href="/fonts/anton-400.ttf" as="font" type="font/ttf" crossorigin>
     <link rel="stylesheet" href="/css/landing.css">
     <script src="{{ asset('js/landing.js') }}?v={{ filemtime(public_path('js/landing.js')) }}" defer></script>
@@ -33,7 +31,7 @@
     <div class="hero-copy">
         <p class="eyebrow"><span class="status-dot"></span> {{ $site['hero_kicker'] }}</p>
         <h1 id="hero-heading"><span>{{ $site['hero_title_line1'] }}</span><span class="rust">{{ $site['hero_title_line2'] }}</span></h1>
-        <p class="hero-subtitle">Your stock. Your sales. <strong>One clear view.</strong></p>
+        <p class="hero-subtitle">Cloud inventory and POS for <strong>Philippine businesses.</strong></p>
         <p class="hero-description">{{ $site['hero_description'] }}</p>
         <div class="hero-buttons"><a href="/register" class="button button-rust trial-cta" data-cms-copy>{{ $site['primary_cta'] }} <span>↗</span></a><a href="#demo" class="text-button"><span class="play-circle">▶</span> See it in action</a></div>
         <p class="hero-reassurance"><span>✓ No card required</span><span>✓ Built for your whole team</span></p>
