@@ -13,7 +13,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     @include('partials.public-metadata', ['seo' => $seo ?? [], 'seoTitle' => 'POSONLY User Guide | Inventory & POS Handbook', 'seoDescription' => 'Learn how to use POSONLY for checkout, inventory, variants, purchasing, reports, teams, receipts, and subscription billing.', 'seoHome' => false])
     <link rel="stylesheet" href="{{ asset('css/fonts.css') }}">
-    <link rel="stylesheet" href="{{ asset('css/guide.css') }}">
+    <link rel="stylesheet" href="{{ asset('css/guide.css') }}?v={{ filemtime(public_path('css/guide.css')) }}">
 </head>
 <body>
     <a class="skip-link" href="#guide-content">Skip to the guide</a>
@@ -213,7 +213,7 @@
             </div>
         </div>
     </main>
-    <footer class="guide-footer"><a class="guide-brand" href="{{ route('home') }}">POSONLY</a><p>A little order. A lot of possibility.</p>@if($companySignedIn)<p><a href="{{ $workspaceUrl }}">Back to workspace ↗</a></p>@endif<p><a href="{{ $developerPortalUrl }}">Developer portal ↗</a></p><span>STAFF GUIDE / 2026</span></footer>
+    <footer class="guide-footer"><a class="guide-brand" href="{{ route('home') }}">POSONLY</a><p>A little order. A lot of possibility.</p>@if($companySignedIn)<p><a href="{{ $workspaceUrl }}">Back to workspace ↗</a></p>@endif<p><a href="{{ $developerPortalUrl }}">Developer portal ↗</a></p><p>@include('partials.public-social-links', ['officialProfiles' => (array) config('seo.official_profiles', [])])</p><span>STAFF GUIDE / 2026</span></footer>
 
     <script>
         (() => {

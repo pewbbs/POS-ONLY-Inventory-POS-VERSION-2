@@ -91,7 +91,7 @@ class SiteContentTest extends TestCase
     public function test_homepage_structured_data_links_the_site_page_and_software_without_invented_ratings_or_addresses(): void
     {
         Http::preventStrayRequests();
-        config(['app.url' => 'https://posonly.example']);
+        config(['app.url' => 'https://posonly.example', 'seo.official_profiles' => []]);
 
         $response = $this->get('/')->assertOk()->assertSeeText('Inventory management and point of sale for Philippine businesses.');
         $document = new DOMDocument;
@@ -121,6 +121,49 @@ class SiteContentTest extends TestCase
             $this->assertArrayNotHasKey('sameAs', $entity);
             $this->assertNotSame('LocalBusiness', $entity['@type']);
         }
+        $this->assertCount(0, (new DOMXPath($document))->query('//footer//*[@aria-label="POSONLY official social profiles"]'));
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['/'])]
+    #[TestWith(['/inventory-management'])]
+    #[TestWith(['/point-of-sale'])]
+    #[TestWith(['/about'])]
+    #[TestWith(['/guide'])]
+    #[TestWith(['/privacy'])]
+    public function test_public_pages_publish_only_verified_company_profiles_in_the_footer_and_organization_identity(string $path): void
+    {
+        Http::preventStrayRequests();
+        config(['app.url' => 'https://posonly.example']);
+
+        $response = $this->get('https://untrusted.example'.$path.'?social_profile=https://unverified.example')->assertOk();
+        $document = new DOMDocument;
+        @$document->loadHTML('<?xml encoding="UTF-8">'.$response->getContent());
+        $xpath = new DOMXPath($document);
+        $scripts = $xpath->query('//script[@type="application/ld+json"]');
+        $this->assertCount(1, $scripts);
+        $graph = json_decode($scripts->item(0)->textContent, true, flags: JSON_THROW_ON_ERROR)['@graph'];
+
+        $this->assertSame('Organization', $graph[0]['@type']);
+        $this->assertSame([
+            'https://www.facebook.com/posonlyph/',
+            'https://www.linkedin.com/company/posonly/',
+        ], $graph[0]['sameAs']);
+        foreach (array_slice($graph, 1) as $entity) {
+            $this->assertArrayNotHasKey('sameAs', $entity);
+        }
+
+        $links = $xpath->query('//footer//*[@aria-label="POSONLY official social profiles"]/a');
+        $this->assertCount(2, $links);
+        $this->assertSame('https://www.facebook.com/posonlyph/', $links->item(0)->getAttribute('href'));
+        $this->assertSame('Facebook ↗', trim($links->item(0)->textContent));
+        $this->assertSame('https://www.linkedin.com/company/posonly/', $links->item(1)->getAttribute('href'));
+        $this->assertSame('LinkedIn ↗', trim($links->item(1)->textContent));
+        foreach ($links as $link) {
+            $this->assertSame('_blank', $link->getAttribute('target'));
+            $this->assertSame('noopener noreferrer', $link->getAttribute('rel'));
+        }
+        $response->assertDontSee('https://unverified.example');
         Http::assertNothingSent();
     }
 

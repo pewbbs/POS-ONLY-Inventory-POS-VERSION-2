@@ -19,4 +19,5 @@
 @media(max-width:800px){.hero h1{font-size:clamp(46px,10vw,72px)}.hero-subtitle{max-width:480px}.product-summary-grid{grid-template-columns:1fr;gap:25px;margin-top:30px}.product-summary-grid article{padding-top:24px}.product-summary-grid h3{font-size:19px}.product-summary-grid p{font-size:13px;max-width:550px}.product-summary-grid .text-button{font-size:12px}.site-footer>div{justify-content:flex-start;gap:16px 22px}}
 @media(max-width:440px){.hero h1{font-size:clamp(42px,11.3vw,50px);letter-spacing:-.6px}.hero-brand-copy{font-size:11px;max-width:320px}.hero-subtitle{font-size:15px}.product-summary-intro h2{font-size:34px}.product-summary-intro>p:last-child{font-size:13px}}
 
+.public-social-links{display:inline-flex;flex-wrap:wrap;gap:14px}
 .cms-preview-note{padding:18px 5%;background:#ead6b6;color:#302b24;font:600 12px/1.8 sans-serif}.cms-preview-note a{margin-left:20px;color:inherit}.hero h1 span{overflow-wrap:anywhere}

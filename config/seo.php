@@ -4,6 +4,10 @@ return [
     'indexing_enabled' => env('SEO_INDEXING_ENABLED', true),
     'site_name' => 'POSONLY',
     'locale' => 'en_PH',
+    'official_profiles' => [
+        'Facebook' => 'https://www.facebook.com/posonlyph/',
+        'LinkedIn' => 'https://www.linkedin.com/company/posonly/',
+    ],
     'product_description' => 'POSONLY is cloud inventory management and point-of-sale software for Philippine businesses. Track products and variants, record sales and returns, manage store locations, and review sales and financial reports.',
     'product_features' => [
         'Inventory tracking and product variants',

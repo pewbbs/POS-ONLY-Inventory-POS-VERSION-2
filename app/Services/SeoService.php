@@ -100,20 +100,26 @@ class SeoService
             $page['breadcrumb'] = ['@id' => $metadata['canonical_url'].'#breadcrumb'];
         }
 
-        $graph = [
-            [
-                '@type' => 'Organization',
-                '@id' => $organizationId,
-                'name' => $metadata['site_name'],
-                'url' => $homeUrl,
-                'areaServed' => ['@type' => 'Country', 'name' => 'Philippines'],
-                'logo' => [
-                    '@type' => 'ImageObject',
-                    'url' => $metadata['site_url'].'/images/favicon.png',
-                    'width' => 192,
-                    'height' => 192,
-                ],
+        $organization = [
+            '@type' => 'Organization',
+            '@id' => $organizationId,
+            'name' => $metadata['site_name'],
+            'url' => $homeUrl,
+            'areaServed' => ['@type' => 'Country', 'name' => 'Philippines'],
+            'logo' => [
+                '@type' => 'ImageObject',
+                'url' => $metadata['site_url'].'/images/favicon.png',
+                'width' => 192,
+                'height' => 192,
             ],
+        ];
+        $officialProfiles = array_values((array) config('seo.official_profiles', []));
+        if ($officialProfiles !== []) {
+            $organization['sameAs'] = $officialProfiles;
+        }
+
+        $graph = [
+            $organization,
             [
                 '@type' => 'WebSite',
                 '@id' => $websiteId,

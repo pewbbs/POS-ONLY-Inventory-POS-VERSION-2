@@ -78,6 +78,6 @@
     </div>
     <section class="marketing-closing"><p class="eyebrow">YOUR NEXT WORKDAY, A LITTLE SIMPLER.</p><h2>Start with one workspace.</h2><a class="button button-rust" href="{{ $actionUrl }}">{{ $actionLabel }} <span aria-hidden="true">↗</span></a></section>
 </main>
-<footer class="site-footer marketing-footer"><a class="wordmark" href="{{ route('home', [], false) }}">POSONLY<span class="brand-period">.</span></a><p>© {{ date('Y') }} POSONLY · ONLINE SERVICE</p><nav aria-label="Footer"><a href="{{ route('marketing.about', [], false) }}">About</a><a href="{{ route('guide', [], false) }}">User guide</a><a href="{{ route('privacy', [], false) }}">Privacy</a><a href="{{ route('developer', ['section' => 'overview'], false) }}">Developer portal</a></nav></footer>
+<footer class="site-footer marketing-footer"><a class="wordmark" href="{{ route('home', [], false) }}">POSONLY<span class="brand-period">.</span></a><p>© {{ date('Y') }} POSONLY · ONLINE SERVICE</p><nav aria-label="Footer"><a href="{{ route('marketing.about', [], false) }}">About</a><a href="{{ route('guide', [], false) }}">User guide</a><a href="{{ route('privacy', [], false) }}">Privacy</a><a href="{{ route('developer', ['section' => 'overview'], false) }}">Developer portal</a>@include('partials.public-social-links', ['officialProfiles' => (array) config('seo.official_profiles', [])])</nav></footer>
 </body>
 </html>

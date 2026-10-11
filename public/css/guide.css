@@ -108,6 +108,7 @@ details[open]>summary>span { transform:rotate(45deg); }
 .guide-footer { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:38px 4.2vw; background:var(--ink); color:var(--paper); }
 .guide-footer p { font-size:11px; color:#c4c6b7; }
 .guide-footer>span { font-size:8px; letter-spacing:1.4px; }
+.public-social-links { display:inline-flex; flex-wrap:wrap; gap:14px; }
 .no-results { padding:35px; border:1px solid var(--line); background:#eeeee4; }
 .no-results p { font-size:24px; letter-spacing:-.5px; margin:0 0 12px; }
 .no-results>span { font-size:12px; color:var(--muted); display:block; }

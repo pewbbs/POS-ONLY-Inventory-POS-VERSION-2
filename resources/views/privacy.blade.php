@@ -11,7 +11,7 @@
     @include('partials.public-metadata', ['seo' => $seo ?? [], 'seoTitle' => 'Privacy Policy | POSONLY', 'seoDescription' => 'Read how POSONLY handles account and business data, Google sign-in, subscription payments, cookies, security, and privacy requests.', 'seoHome' => false])
     <meta name="referrer" content="no-referrer">
     <link rel="stylesheet" href="{{ asset('css/fonts.css') }}">
-    <link rel="stylesheet" href="{{ asset('css/guide.css') }}">
+    <link rel="stylesheet" href="{{ asset('css/guide.css') }}?v={{ filemtime(public_path('css/guide.css')) }}">
 </head>
 <body>
     <a class="skip-link" href="#privacy-content">Skip to the privacy policy</a>
@@ -160,6 +160,7 @@
         <p>Your business. In sync.</p>
         @if($companySignedIn)<p><a href="{{ $workspaceUrl }}">Back to workspace ↗</a></p>@endif
         <p><a href="{{ $developerPortalUrl }}">Developer portal ↗</a></p>
+        <p>@include('partials.public-social-links', ['officialProfiles' => (array) config('seo.official_profiles', [])])</p>
         <span>© {{ now()->year }} POSONLY</span>
     </footer>
 </body>
