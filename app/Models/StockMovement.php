@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-#[Fillable(['tenant_id', 'product_id', 'location_id', 'user_id', 'quantity', 'type', 'reason', 'reference'])]
+#[Fillable(['tenant_id', 'product_id', 'location_id', 'user_id', 'quantity', 'type', 'reason', 'reference', 'idempotency_key', 'request_hash'])]
 class StockMovement extends Model
 {
     use HasFactory;

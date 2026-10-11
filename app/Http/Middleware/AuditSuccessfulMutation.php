@@ -64,7 +64,7 @@ class AuditSuccessfulMutation
             'POST api/commerce/orders/{order}/cancel' => ['channel.order_canceled', 'channel_order'],
         ];
         $action = $actions[$request->method().' '.$request->route()?->uri()] ?? null;
-        if (! $action || ! $request->user() || $response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
+        if (! $action || ! $request->user() || $response->getStatusCode() < 200 || $response->getStatusCode() >= 300 || $request->attributes->get('stock_mutation_replayed') === true) {
             return $response;
         }
         try {

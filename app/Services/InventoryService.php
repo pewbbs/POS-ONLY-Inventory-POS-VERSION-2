@@ -34,9 +34,9 @@ class InventoryService
     }
 
     /** Bulk callers may refresh channels and dispatch the stock check once before their outer transaction commits. */
-    public function changeStock(User $user, Product $product, int $locationId, int $quantity, string $type, string $reason, ?string $reference = null, bool $refreshTracking = true): void
+    public function changeStock(User $user, Product $product, int $locationId, int $quantity, string $type, string $reason, ?string $reference = null, bool $refreshTracking = true): StockMovement
     {
-        DB::transaction(function () use ($user, $product, $locationId, $quantity, $type, $reason, $reference, $refreshTracking): void {
+        return DB::transaction(function () use ($user, $product, $locationId, $quantity, $type, $reason, $reference, $refreshTracking): StockMovement {
             Tenant::whereKey($user->tenant_id)->lockForUpdate()->firstOrFail();
             $actor = User::where('tenant_id', $user->tenant_id)->lockForUpdate()->findOrFail($user->id);
             abort_unless($actor->is_active, 403, 'Your account no longer has workspace access.');
@@ -53,7 +53,7 @@ class InventoryService
             } elseif ($quantity > 0) {
                 Stock::whereKey($stock->id)->increment('quantity', $quantity);
             }
-            StockMovement::create([
+            $movement = StockMovement::create([
                 'tenant_id' => $actor->tenant_id, 'product_id' => $product->id, 'location_id' => $locationId,
                 'user_id' => $actor->id, 'quantity' => $quantity, 'type' => $type, 'reason' => $reason, 'reference' => $reference,
             ]);
@@ -61,6 +61,8 @@ class InventoryService
                 app(CommerceService::class)->syncInventoryForTenant($actor->tenant_id);
                 CheckLowStock::dispatch($actor->tenant_id)->afterCommit();
             }
+
+            return $movement;
         }, 5);
     }
 

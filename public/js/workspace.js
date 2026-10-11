@@ -1737,12 +1737,14 @@
     }
 
     function adjustModal(product) {
-        openModal('Put your stock in order.', escape(product.name), modalForm('adjust', `<div class="modal-tip">At ${escape(currentLocation()?.name)}: <strong>${stock(product)} physical · ${reservedStock(product)} reserved · ${availableStock(product)} available</strong>. Reserved units cannot be removed.</div><div class="form-grid">${field('Stock change', 'quantity', '', 'number', 'required step="1"', 'Use 10 to add ten units, or -3 to remove three.', true)}${field('Reason', 'reason', '', 'text', 'required maxlength="200" placeholder="For example: Stock count correction"', 'Saved in your stock movement history.', true)}</div>`, 'Update stock', `data-id="${product.id}"`));
+        if (state.pendingRecordAction) { recordRecoveryModal(); return; }
+        openModal('Put your stock in order.', escape(product.name), modalForm('adjust', `<div class="modal-tip">At ${escape(currentLocation()?.name)}: <strong>${stock(product)} physical · ${reservedStock(product)} reserved · ${availableStock(product)} available</strong>. Reserved units cannot be removed.</div><div class="form-grid">${field('Stock change', 'quantity', '', 'number', 'required step="1"', 'Use 10 to add ten units, or -3 to remove three.', true)}${field('Reason', 'reason', '', 'text', 'required maxlength="200" placeholder="For example: Stock count correction"', 'Saved in your stock movement history.', true)}</div>`, 'Update stock', `data-id="${product.id}" data-key="${uuid()}" data-location="${state.location}"`));
     }
 
     function transferModal(product) {
+        if (state.pendingRecordAction) { recordRecoveryModal(); return; }
         if (locations().length < 2) { toast('Add another location in Settings before transferring stock.', true); return; }
-        openModal('Move stock, keep the balance.', escape(product.name), modalForm('transfer', `<div class="modal-tip">From <strong>${escape(currentLocation()?.name)}</strong> · ${availableStock(product)} unreserved units available.</div><div class="form-grid">${selectField('To location', 'to_location_id', locationOptions(null, state.location), '', true)}${field('Quantity to transfer', 'quantity', 1, 'number', `required min="1" max="${availableStock(product)}" step="1"`, 'The source and destination update together.', true)}</div>`, 'Transfer stock', `data-id="${product.id}"`));
+        openModal('Move stock, keep the balance.', escape(product.name), modalForm('transfer', `<div class="modal-tip">From <strong>${escape(currentLocation()?.name)}</strong> · ${availableStock(product)} unreserved units available.</div><div class="form-grid">${selectField('To location', 'to_location_id', locationOptions(null, state.location), '', true)}${field('Quantity to transfer', 'quantity', 1, 'number', `required min="1" max="${availableStock(product)}" step="1"`, 'The source and destination update together.', true)}</div>`, 'Transfer stock', `data-id="${product.id}" data-key="${uuid()}" data-location="${state.location}"`));
     }
 
     function addCustomerModal() {
@@ -1856,7 +1858,7 @@
         state.recordActionRestored = true;
         try {
             const pending = JSON.parse(sessionStorage.getItem(recordStorageKey()) || 'null');
-            if (pending && /^(?:\/purchase-orders|\/(?:sales|purchase-orders)\/\d+\/(?:return|receive)|\/cash-sessions\/(?:open|\d+\/(?:adjustments|close))|\/commerce\/(?:channels(?:\/\d+(?:\/(?:pause|resume|sync|orders))?)?|orders\/\d+\/(?:import|cancel))|\/product-families(?:\/\d+\/variants)?)$/.test(pending.path) && (pending.payload?.idempotency_key || pending.recovery_key) && ['POST', 'PATCH'].includes(pending.method || 'POST')) { state.pendingRecordAction = {...pending, uncertain: true}; if (pending.path.startsWith('/commerce/')) { state.commerceChannel = number(pending.context?.channel_id) || null; if (!state.cart.length && pending.context?.location_id) { state.location = number(pending.context.location_id); } } }
+            if (pending && /^(?:\/products\/\d+\/adjust|\/transfers|\/purchase-orders|\/(?:sales|purchase-orders)\/\d+\/(?:return|receive)|\/cash-sessions\/(?:open|\d+\/(?:adjustments|close))|\/commerce\/(?:channels(?:\/\d+(?:\/(?:pause|resume|sync|orders))?)?|orders\/\d+\/(?:import|cancel))|\/product-families(?:\/\d+\/variants)?)$/.test(pending.path) && (pending.payload?.idempotency_key || pending.recovery_key) && ['POST', 'PATCH'].includes(pending.method || 'POST')) { state.pendingRecordAction = {...pending, uncertain: true}; if (pending.path.startsWith('/commerce/')) { state.commerceChannel = number(pending.context?.channel_id) || null; if (!state.cart.length && pending.context?.location_id) { state.location = number(pending.context.location_id); } } }
         } catch { /* Retain in-memory recovery when storage is unavailable. */ }
     }
 
@@ -1869,7 +1871,10 @@
         const pending = state.pendingRecordAction; if (!pending) { return; }
         const commerce = pending.path.startsWith('/commerce/');
         const variants = pending.path.startsWith('/product-families');
-        const rows = variants ? `<strong>${escape(pending.context?.family_name || pending.payload.name || 'Product family')}</strong><small class="table-secondary">Opening stock at ${escape(locationName(pending.payload.location_id))}</small>${(pending.payload.variants || []).map(item => `<div class="receipt-line"><div><strong>${escape(item.sku)}</strong><small class="table-secondary">${escape(variantLabel(item.options || {}))}</small></div><span>${count(item.quantity)} units</span></div>`).join('')}` : (pending.payload.items || []).map(item => `<div class="receipt-line"><strong>${escape(productById(item.product_id)?.name || products().find(product => product.sku === item.sku)?.name || item.sku || `Product #${item.product_id}`)}</strong><span>${count(item.quantity)} units</span></div>`).join('');
+        const adjustment = pending.path.match(/^\/products\/(\d+)\/adjust$/);
+        const transfer = pending.path === '/transfers';
+        const stockProductId = adjustment ? number(adjustment[1]) : number(pending.payload.product_id);
+        const rows = adjustment || transfer ? `<div class="receipt-line"><strong>${escape(productById(stockProductId)?.name || `Product #${stockProductId}`)}</strong><span>${adjustment && number(pending.payload.quantity) > 0 ? '+' : ''}${count(pending.payload.quantity)} units</span></div><small class="table-secondary">${escape(locationName(pending.payload.location_id ?? pending.payload.from_location_id))}${transfer ? ` → ${escape(locationName(pending.payload.to_location_id))}` : ''}</small>${pending.payload.reason ? `<small class="table-secondary">${escape(pending.payload.reason)}</small>` : ''}` : variants ? `<strong>${escape(pending.context?.family_name || pending.payload.name || 'Product family')}</strong><small class="table-secondary">Opening stock at ${escape(locationName(pending.payload.location_id))}</small>${(pending.payload.variants || []).map(item => `<div class="receipt-line"><div><strong>${escape(item.sku)}</strong><small class="table-secondary">${escape(variantLabel(item.options || {}))}</small></div><span>${count(item.quantity)} units</span></div>`).join('')}` : (pending.payload.items || []).map(item => `<div class="receipt-line"><strong>${escape(productById(item.product_id)?.name || products().find(product => product.sku === item.sku)?.name || item.sku || `Product #${item.product_id}`)}</strong><span>${count(item.quantity)} units</span></div>`).join('');
         const details = rows || (commerce ? `<strong>${escape(pending.payload.name || pending.payload.external_reference || pending.label)}</strong><small class="table-secondary">${escape(locationName(pending.context?.location_id))} · original request kept unchanged</small>` : `<div class="receipt-line"><strong>${escape(pending.label)}</strong><span>${money(pending.payload.amount ?? pending.payload.opening_float ?? pending.payload.counted_cash)}</span></div>${pending.payload.reason ? `<small>${escape(pending.payload.reason)}</small>` : ''}`);
         openModal('Check that workspace update.', 'The original request is kept unchanged for a safe retry.', modalForm('record-recovery', `<div class="modal-tip">${escape(pending.label)} may already have been recorded. Retry the same request to retrieve its result or save it once. Confirm this action before starting another stage.</div><div class="purchase-order-items">${details}</div>`, 'Check update status'));
     }
@@ -1882,7 +1887,7 @@
         }
         const protectedRequest = state.pendingRecordAction;
         state.busy = true;
-        const submit = form.querySelector('button[type="submit"]'); const previous = submit.innerHTML;
+        const submit = form.querySelector('button[type="submit"]'); let previous = submit.innerHTML;
         const error = form.querySelector('.form-error'); error.hidden = true; submit.disabled = true; submit.textContent = 'Saving…';
         try {
             const result = await api(protectedRequest.path, protectedRequest.method || 'POST', protectedRequest.payload);
@@ -1905,7 +1910,15 @@
                     }
                 } catch { /* Keep the original request protected when the final state cannot be verified. */ }
             }
-            if ((!protectedRequest.path.startsWith('/commerce/') && !protectedRequest.path.startsWith('/product-families') && failure.status === 422) || (!state.pendingRecordAction.uncertain && failure.status >= 400 && failure.status < 500)) { clearRecordAction(); }
+            const stockAction = protectedRequest.path === '/transfers' || /^\/products\/\d+\/adjust$/.test(protectedRequest.path);
+            if ((!stockAction && !protectedRequest.path.startsWith('/commerce/') && !protectedRequest.path.startsWith('/product-families') && failure.status === 422) || (!protectedRequest.uncertain && failure.status >= 400 && failure.status < 500)) {
+                clearRecordAction();
+                if (['adjust', 'transfer'].includes(form.dataset.form)) {
+                    form.dataset.key = uuid();
+                    form.querySelectorAll('input,select,button[data-action]:not([data-action="close-modal"])').forEach(input => { input.disabled = false; });
+                    previous = `${form.dataset.form === 'adjust' ? 'Update stock' : 'Transfer stock'} ${icon('arrow')}`;
+                }
+            }
             else {
                 state.pendingRecordAction.uncertain = true;
                 try { sessionStorage.setItem(recordStorageKey(), JSON.stringify(state.pendingRecordAction)); } catch { /* In-memory recovery remains available. */ }
@@ -2431,8 +2444,13 @@
                 await save(form, form.dataset.form === 'add-product' ? '/products' : `/products/${form.dataset.id}`, form.dataset.form === 'add-product' ? 'POST' : 'PUT', payload, form.dataset.form === 'add-product' ? 'Your product is ready to sell.' : 'Product details updated.');
                 break;
             }
-            case 'adjust': await save(form, `/products/${form.dataset.id}/adjust`, 'POST', {location_id: state.location, quantity: number(data.quantity), reason: data.reason}, 'Stock adjusted. A movement record has been saved.'); break;
-            case 'transfer': await save(form, '/transfers', 'POST', {product_id: number(form.dataset.id), from_location_id: state.location, to_location_id: number(data.to_location_id), quantity: number(data.quantity)}, 'Stock moved. Both locations are up to date.'); break;
+            case 'adjust':
+            case 'transfer': {
+                if (state.pendingRecordAction) { const pending = state.pendingRecordAction; await saveRecordAction(form, pending.path, pending.payload, pending.label); break; }
+                const adjustment = form.dataset.form === 'adjust';
+                const payload = {idempotency_key: form.dataset.key, quantity: number(data.quantity), ...(adjustment ? {location_id: number(form.dataset.location), reason: data.reason} : {product_id: number(form.dataset.id), from_location_id: number(form.dataset.location), to_location_id: number(data.to_location_id)})};
+                await saveRecordAction(form, adjustment ? `/products/${form.dataset.id}/adjust` : '/transfers', payload, adjustment ? 'Stock adjustment' : 'Stock transfer'); break;
+            }
             case 'customer':
                 result = await save(form, '/customers', 'POST', data, 'Customer added.');
                 if (result && state.section === 'pos') { state.customer = String(result.id || result.customer?.id || ''); renderSection(); }
