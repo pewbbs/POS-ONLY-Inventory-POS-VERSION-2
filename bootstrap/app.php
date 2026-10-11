@@ -29,6 +29,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(SeoHeaders::class);
         $middleware->alias(['role' => RequireRole::class, 'tenant' => EnsureTenantAccess::class, 'audit' => AuditSuccessfulMutation::class, 'subscribed' => EnsureSubscriptionAccess::class, 'developer' => RequireDeveloper::class]);
         $middleware->redirectGuestsTo(fn (Request $request): string => $request->is('developer', 'developer/*', 'api/developer', 'api/developer/*') ? '/developer/login' : '/login');
+        $middleware->redirectUsersTo(fn (Request $request): string => $request->is('developer', 'developer/*', 'api/developer', 'api/developer/*')
+            ? route('developer', ['section' => 'overview'])
+            : route('workspace', ['section' => 'overview']));
         $middleware->preventRequestForgery(except: ['webhooks/paymongo', 'webhooks/paymongo/test']);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
