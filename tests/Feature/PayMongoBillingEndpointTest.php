@@ -5,10 +5,12 @@ namespace Tests\Feature;
 use App\Models\ActivityLog;
 use App\Models\BillingInvoice;
 use App\Models\BillingPaymentAttempt;
+use App\Models\PlatformAdmin;
 use App\Models\Stock;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\DeveloperPlatformService;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +21,12 @@ use Tests\TestCase;
 class PayMongoBillingEndpointTest extends TestCase
 {
     use LazilyRefreshDatabase;
+
+    protected function tearDown(): void
+    {
+        $this->app->detectEnvironment(fn (): string => 'testing');
+        parent::tearDown();
+    }
 
     private function configurePayMongo(): void
     {
@@ -39,6 +47,128 @@ class PayMongoBillingEndpointTest extends TestCase
         $invoice = BillingInvoice::factory()->create(['tenant_id' => $tenant->id, 'subscription_id' => $subscription->id]);
 
         return compact('user', 'invoice', 'subscription');
+    }
+
+    private function configureLive(): void
+    {
+        $this->configurePayMongo();
+        config(['paymongo.mode' => 'live', 'paymongo.secret_key' => 'sk_live_endpointfixture',
+            'paymongo.webhook_secret' => 'whsec_live_endpointfixture', 'paymongo.payment_methods' => ['qrph'],
+            'app.url' => 'https://posonly.example']);
+        $this->app->detectEnvironment(fn (): string => 'production');
+        $this->withSession(['_token' => 'live-csrf-fixture'])->withHeader('X-CSRF-TOKEN', 'live-csrf-fixture');
+    }
+
+    public function test_live_qr_ph_checkout_and_server_confirmation_preserve_live_provenance_and_neutral_activity_keys(): void
+    {
+        $this->freezeSecond();
+        $store = $this->billing();
+        $records = $this->operationalRecords();
+        $this->configureLive();
+        Http::fake(['https://api.paymongo.com/v2/checkout_sessions' => fn (Request $request) => Http::response(
+            $this->pendingSession($request['data']['attributes']['reference_number'], true),
+        )]);
+        $path = '/api/billing/invoices/'.$store['invoice']->id;
+
+        $response = $this->actingAs($store['user'])->postJson($path.'/paymongo-checkout')->assertOk()
+            ->assertJsonPath('attempt.mode', 'live')->assertJsonPath('attempt.status', 'pending')
+            ->assertJsonPath('billing.payment_config.mode', 'live')->assertJsonPath('billing.payment_config.payment_methods', ['qrph']);
+        $resource = $this->pendingSession($response->json('attempt.reference'), true);
+        $resource['data']['attributes']['payments'] = [['id' => 'pay_live_endpoint', 'type' => 'payment', 'attributes' => [
+            'status' => 'paid', 'livemode' => true, 'amount' => 99900, 'currency' => 'PHP',
+            'paid_at' => now()->timestamp, 'source' => ['type' => 'qrph'], 'refunds' => [],
+        ]]];
+        Http::fake(['https://api.paymongo.com/v1/checkout_sessions/cs_endpoint' => Http::response($resource)]);
+
+        $checked = $this->postJson($path.'/paymongo-recheck')->assertOk()->assertHeader('Cache-Control', 'no-store, private')
+            ->assertJsonPath('attempt.status', 'paid')->assertJsonPath('attempt.mode', 'live')
+            ->assertJsonPath('billing.invoices.0.payment_source', 'paymongo_live')
+            ->assertJsonPath('billing.invoices.0.payment_mode', 'live');
+        $this->assertStringNotContainsString('sk_live_', $checked->getContent());
+        $this->assertDatabaseHas('activity_logs', ['tenant_id' => $store['user']->tenant_id, 'action' => 'subscription.checkout_requested']);
+        $this->assertDatabaseHas('activity_logs', ['tenant_id' => $store['user']->tenant_id, 'action' => 'subscription.payment_checked']);
+        $this->getJson('/api/activity?action=subscription.checkout_requested')->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.action', 'subscription.checkout_requested');
+        $csv = $this->get('/api/billing/invoices/export')->assertOk()->streamedContent();
+        $rows = array_map(fn (string $row): array => str_getcsv($row, ',', '"', ''), explode("\n", trim($csv)));
+        $this->assertSame('paymongo', $rows[1][10]);
+        $this->assertSame('live', $rows[1][11]);
+        $this->assertSame('pay_live_endpoint', $rows[1][14]);
+        $this->assertSame($records, $this->operationalRecords());
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET');
+    }
+
+    public function test_live_recovery_uses_get_only_and_records_neutral_recovery_action(): void
+    {
+        $store = $this->billing();
+        $attempt = $this->unresolvedAttempt($store['invoice']);
+        $attempt->update(['mode' => 'live', 'checkout_payload' => ['data' => ['attributes' => ['payment_method_types' => ['qrph']]]]]);
+        $this->configureLive();
+        Http::fake(['https://api.paymongo.com/v1/checkout_sessions/cs_endpoint' => Http::response($this->pendingSession($attempt->reference, true))]);
+
+        $this->actingAs($store['user'])->postJson('/api/billing/invoices/'.$store['invoice']->id.'/paymongo-recover', ['session_id' => 'cs_endpoint'])
+            ->assertOk()->assertJsonPath('attempt.id', $attempt->id)->assertJsonPath('attempt.mode', 'live')->assertJsonPath('attempt.status', 'pending');
+
+        $this->assertDatabaseHas('activity_logs', ['tenant_id' => $store['user']->tenant_id, 'action' => 'subscription.checkout_recovered']);
+        $this->getJson('/api/activity?action=subscription.checkout_recovered')->assertOk()->assertJsonPath('meta.total', 1);
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET');
+    }
+
+    public function test_live_recheck_without_an_attempt_uses_neutral_activity_and_never_contacts_provider(): void
+    {
+        $store = $this->billing();
+        $this->configureLive();
+
+        $this->actingAs($store['user'])->postJson('/api/billing/invoices/'.$store['invoice']->id.'/paymongo-recheck')
+            ->assertOk()->assertJsonPath('attempt', null)->assertJsonPath('checkout_url', null);
+
+        $this->assertDatabaseHas('activity_logs', ['tenant_id' => $store['user']->tenant_id, 'action' => 'subscription.payment_checked']);
+        $this->assertDatabaseMissing('activity_logs', ['tenant_id' => $store['user']->tenant_id, 'action' => 'subscription.test_payment_checked']);
+        $this->assertDatabaseCount('billing_payment_attempts', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_live_checkout_without_a_signing_secret_is_disabled_before_a_provider_request_or_record_creation(): void
+    {
+        $store = $this->billing();
+        $this->configureLive();
+        config(['paymongo.webhook_secret' => '']);
+
+        $this->actingAs($store['user'])->postJson('/api/billing/invoices/'.$store['invoice']->id.'/paymongo-checkout')
+            ->assertUnprocessable()->assertJsonValidationErrors('payment');
+        $this->getJson('/api/billing')->assertOk()->assertJsonPath('payment_config.checkout_enabled', false)
+            ->assertJsonPath('payment_config.webhook_configured', false);
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('billing_payment_attempts', 0);
+        $this->assertSame('open', $store['invoice']->refresh()->status);
+    }
+
+    public function test_developer_totals_and_billing_history_keep_live_test_and_simulation_records_separate(): void
+    {
+        $store = $this->billing();
+        $developer = PlatformAdmin::factory()->create();
+        $store['invoice']->update(['status' => 'paid', 'payment_provider' => 'paymongo', 'payment_mode' => 'live', 'payment_method' => 'qrph']);
+        $test = BillingInvoice::factory()->create(['tenant_id' => $store['user']->tenant_id, 'subscription_id' => $store['subscription']->id,
+            'status' => 'paid', 'amount_cents' => 199900, 'payment_provider' => 'paymongo', 'payment_mode' => 'test', 'payment_method' => 'card']);
+        $simulation = BillingInvoice::factory()->create(['tenant_id' => $store['user']->tenant_id, 'subscription_id' => $store['subscription']->id,
+            'status' => 'paid', 'amount_cents' => 29900, 'payment_provider' => 'simulation', 'payment_mode' => 'simulation', 'payment_method' => 'simulation']);
+        $this->configureLive();
+        $service = app(DeveloperPlatformService::class);
+
+        $overview = $service->bootstrap($developer, $service->filters(\Illuminate\Http\Request::create('/api/developer/bootstrap')));
+        $billing = $this->actingAs($store['user'])->getJson('/api/billing')->assertOk();
+        $sources = collect($billing->json('invoices'))->keyBy('id');
+
+        $this->assertSame(999, $overview['overview']['paid_paymongo_live_total']);
+        $this->assertSame(1999, $overview['overview']['paid_paymongo_test_total']);
+        $this->assertSame(299, $overview['overview']['paid_simulation_total']);
+        $this->assertSame('paymongo_live', $sources[$store['invoice']->id]['payment_source']);
+        $this->assertSame('paymongo_test', $sources[$test->id]['payment_source']);
+        $this->assertSame('simulation', $sources[$simulation->id]['payment_source']);
+        Http::assertNothingSent();
     }
 
     public function test_guests_cannot_start_or_recheck_provider_checkout(): void
@@ -564,10 +694,10 @@ class PayMongoBillingEndpointTest extends TestCase
     }
 
     /** @return array<string, mixed> */
-    private function pendingSession(string $reference): array
+    private function pendingSession(string $reference, bool $live = false): array
     {
         return ['data' => ['id' => 'cs_endpoint', 'type' => 'checkout_session', 'attributes' => [
-            'livemode' => false, 'reference_number' => $reference, 'line_items' => [['amount' => 99900, 'currency' => 'PHP', 'quantity' => 1]],
+            'livemode' => $live, 'reference_number' => $reference, 'line_items' => [['amount' => 99900, 'currency' => 'PHP', 'quantity' => 1]],
             'status' => 'active', 'checkout_url' => 'https://checkout.paymongo.com/endpoint-fixture', 'payments' => [],
         ]]];
     }

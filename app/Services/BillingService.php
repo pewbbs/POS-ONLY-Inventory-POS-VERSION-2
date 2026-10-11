@@ -118,7 +118,9 @@ class BillingService
             'payment_method' => $invoice->payment_method,
             'payment_provider' => $invoice->payment_provider ?? ($invoice->payment_method === 'simulation' ? 'simulation' : null),
             'payment_mode' => $invoice->payment_mode ?? ($invoice->payment_method === 'simulation' ? 'simulation' : null),
-            'payment_source' => $invoice->payment_provider === 'paymongo' ? 'paymongo_test' : ($invoice->payment_method === 'simulation' ? 'simulation' : null),
+            'payment_source' => $invoice->payment_provider === 'paymongo'
+                ? (in_array($invoice->payment_mode, ['test', 'live'], true) ? 'paymongo_'.$invoice->payment_mode : 'paymongo_unknown')
+                : ($invoice->payment_method === 'simulation' ? 'simulation' : null),
             'latest_attempt' => $invoice->relationLoaded('latestPaymentAttempt') ? $invoice->latestPaymentAttempt?->safeRecord() : null,
             'confirmed_attempt' => $invoice->payment_provider === 'paymongo' && $invoice->relationLoaded('confirmedPaymentAttempt') ? $invoice->confirmedPaymentAttempt?->safeRecord() : null];
     }
@@ -278,7 +280,7 @@ class BillingService
     private function assertNoOutstandingCheckout(Subscription $subscription): void
     {
         if ($this->hasOutstandingCheckout($subscription)) {
-            throw ValidationException::withMessages(['payment' => 'Resolve the outstanding PayMongo test checkout before changing or canceling this subscription or starting another invoice.']);
+            throw ValidationException::withMessages(['payment' => 'Resolve the outstanding PayMongo checkout before changing or canceling this subscription or starting another invoice.']);
         }
     }
 
@@ -312,13 +314,15 @@ class BillingService
             $subscription = $this->ensure($tenant);
             $duplicate = BillingPaymentAttempt::where('payment_id', $paymentId)->whereKeyNot($attempt->id)->exists();
             $reason = match (true) {
-                $duplicate => 'This test payment was already associated with another checkout record.',
+                $duplicate => 'This payment was already associated with another checkout record.',
                 $reviewReason !== null => $reviewReason,
                 $invoice->subscription_id !== $subscription->id => 'The paid checkout does not match the current subscription record.',
                 $invoice->status !== 'open' => 'A payment was confirmed after this invoice was paid or closed. Review it with the provider.',
                 $subscription->cancel_at_period_end || $subscription->status === 'canceled' => 'A payment was confirmed after subscription cancellation. Review it with the provider.',
                 $subscription->current_period_end?->isFuture() === true => 'A payment was confirmed while this subscription period was already paid. Review it with the provider.',
-                $attempt->mode !== 'test' || $attempt->amount_cents !== (int) $invoice->amount_cents || $attempt->currency !== $invoice->currency => 'The paid checkout does not match the stored invoice amount or mode.',
+                ! $this->paymongo->modeAllowed() || $attempt->mode !== $this->paymongo->mode()
+                    || ! $this->paymongo->configuration()['checkout_enabled']
+                    || $attempt->amount_cents !== (int) $invoice->amount_cents || $attempt->currency !== $invoice->currency => 'The paid checkout does not match the stored invoice amount or mode.',
                 ! array_key_exists($invoice->plan, config('billing.plans')) => 'The paid invoice plan is no longer configured.',
                 default => null,
             };
@@ -333,7 +337,7 @@ class BillingService
                 'status' => $reason === null ? 'paid' : 'needs_review', 'failure_summary' => $reason,
                 'active_scope' => $reason === null ? null : $attempt->active_scope]);
             if ($reason === null) {
-                $this->activateInvoice($invoice, $subscription, $tenant, $paidAt, $method, 'paymongo:'.$paymentId, $attempt->initiated_by, 'paymongo', 'test');
+                $this->activateInvoice($invoice, $subscription, $tenant, $paidAt, $method, 'paymongo:'.$paymentId, $attempt->initiated_by, 'paymongo', $attempt->mode);
             }
 
             return $attempt;

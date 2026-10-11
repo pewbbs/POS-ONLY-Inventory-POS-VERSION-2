@@ -71,6 +71,10 @@ class AuditSuccessfulMutation
             $resourceId = $action[1] === 'tenant' ? $request->user()->tenant_id : null;
             if ($response instanceof JsonResponse) {
                 $data = $response->getData(true);
+                $paymentMode = $data['attempt']['mode'] ?? $data['billing']['payment_config']['mode'] ?? null;
+                if ($paymentMode === 'live' && str_starts_with($action[0], 'subscription.test_')) {
+                    $action[0] = str_replace('subscription.test_', 'subscription.', $action[0]);
+                }
                 $resourceId = isset($data['id']) && is_numeric($data['id']) ? (int) $data['id'] : $resourceId;
                 if ($action[1] === 'subscription') {
                     $resourceId = $data['subscription']['id'] ?? null;

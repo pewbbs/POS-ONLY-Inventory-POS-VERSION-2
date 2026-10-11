@@ -389,9 +389,9 @@ class MonitoringService
             if ($key === 'billing' && config('billing.payment_provider') === 'paymongo') {
                 $configuration = app(PayMongoClient::class)->configuration();
 
-                return ['key' => $key, 'label' => 'Subscription billing', 'status' => $configuration['checkout_enabled'] ? 'test' : 'disabled',
+                return ['key' => $key, 'label' => 'Subscription billing', 'status' => $configuration['checkout_enabled'] ? $configuration['mode'] : 'disabled',
                     'summary' => $configuration['checkout_enabled']
-                        ? 'PayMongo test checkout is configured. Provider availability is checked when a payment is requested or rechecked; health checks make no provider requests.'
+                        ? 'PayMongo '.$configuration['mode'].' checkout is configured. Provider availability is checked when a payment is requested or rechecked; health checks make no provider requests.'
                         : $configuration['reason']];
             }
             $enabled = $local && (bool) config($key.'.simulations_enabled', false);

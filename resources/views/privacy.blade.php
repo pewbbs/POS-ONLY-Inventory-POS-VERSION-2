@@ -65,7 +65,7 @@
                         <ul>
                             <li><strong>Accounts:</strong> Names, email addresses, company names, team roles, access status, account verification details, and password hashes where password access is used.</li>
                             <li><strong>Business records:</strong> Products and variants, stock, purchase orders, suppliers, sales and returns, customer names and optional email addresses and phone numbers, cash-session records, and staff and location references.</li>
-                            <li><strong>Settings and billing:</strong> Receipt logos, company addresses and phone numbers, tax and receipt preferences, subscription plans, trials, renewal dates, usage limits, and invoice records.</li>
+                            <li><strong>Settings and billing:</strong> Receipt logos, company addresses and phone numbers, tax and receipt preferences, subscription plans, trials, renewal dates, usage limits, invoices, payment provider and mode, checkout and payment references, payment status, and confirmation timestamps.</li>
                             <li><strong>Operation and security:</strong> Session information, IP addresses and browser user agents in session records, timestamps, activity and administration history, error logs, and system-health records.</li>
                         </ul>
                         <p>We use these details to provide the features you choose, keep company records together, manage permissions and subscription access, send requested password-recovery emails, and investigate problems or misuse.</p>
@@ -94,7 +94,9 @@
                         <p>Authorized platform owners manage companies, subscriptions, invoices, and website content. Server and database operators may need technical access to maintain the service or investigate an issue.</p>
                         <p><strong>Hostinger</strong> hosts POSONLY’s application, database, and stored files and processes network requests. Hostinger’s email infrastructure handles outbound password-recovery emails, including destination addresses and message contents.</p>
                         <p>If you choose Google, your browser visits Google’s service and POSONLY exchanges the authorization code with Google to verify your identity. Printed receipts, saved PDFs, and downloaded reports are controlled by the business and the people who create or receive those copies.</p>
-                        <p>Live online subscription payment collection and external commerce synchronization are not enabled in the current production service. We will update these disclosures before offering integrations that share additional information.</p>
+                        <p>When you choose enabled <strong>PayMongo hosted checkout</strong> for a subscription invoice, POSONLY sends PayMongo the plan description, invoice amount in Philippine pesos, a payment reference, and checkout return URLs. Your browser opens PayMongo’s payment page. We retain checkout and payment identifiers, payment mode, status, and confirmation times to verify the invoice and manage subscription access.</p>
+                        <p>You enter hosted-checkout payment details with PayMongo, rather than in POSONLY’s forms. POSONLY does not collect or store your card number or security code. PayMongo processes information under <a class="text-link" href="https://www.paymongo.com/en/privacy" rel="noreferrer">PayMongo’s privacy policy</a>. Live mode collects real payments; test and local simulated records are labeled separately.</p>
+                        <p>External commerce synchronization is not connected. Simulated channel orders and local simulated invoice payments contact no payment provider.</p>
                     </div>
                 </article>
 

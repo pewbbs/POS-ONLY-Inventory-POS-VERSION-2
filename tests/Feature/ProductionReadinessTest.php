@@ -11,6 +11,7 @@ use Illuminate\Console\Command;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\TestWith;
 use Tests\TestCase;
@@ -29,6 +30,7 @@ class ProductionReadinessTest extends TestCase
             'app.cipher' => 'AES-256-CBC',
             'stockroom.demo_enabled' => false,
             'billing.simulations_enabled' => false,
+            'billing.payment_provider' => 'simulation',
             'paymongo.enabled' => false,
             'paymongo.mode' => 'test',
             'paymongo.secret_key' => '',
@@ -49,6 +51,19 @@ class ProductionReadinessTest extends TestCase
             'mail.mailers.smtp.host' => 'mail.shop-owned-by-test.dev',
             'mail.from.address' => 'support@shop-owned-by-test.dev',
             'trustedproxy.proxies' => null,
+        ]);
+    }
+
+    private function livePayMongoConfiguration(): void
+    {
+        $this->productionConfiguration();
+        config([
+            'billing.payment_provider' => 'paymongo',
+            'paymongo.enabled' => true,
+            'paymongo.mode' => 'live',
+            'paymongo.secret_key' => 'sk_live_private-fixture-never-display',
+            'paymongo.webhook_secret' => 'whsec_live-private-fixture-never-display',
+            'paymongo.payment_methods' => ['card'],
         ]);
     }
 
@@ -121,13 +136,59 @@ class ProductionReadinessTest extends TestCase
 
     #[TestWith(['test'])]
     #[TestWith(['live'])]
-    public function test_production_rejects_enabled_paymongo_even_when_a_live_mode_is_requested(string $mode): void
+    public function test_production_rejects_incomplete_paymongo_configuration(string $mode): void
     {
         $this->productionConfiguration();
-        config(['paymongo.enabled' => true, 'paymongo.mode' => $mode]);
+        config(['billing.payment_provider' => 'paymongo', 'paymongo.enabled' => true, 'paymongo.mode' => $mode]);
 
         $this->artisan('stockroom:preflight', ['--configuration-only' => true])
-            ->expectsOutputToContain('PAYMONGO_ENABLED must be false. PayMongo billing is test-only')
+            ->expectsOutputToContain('Enabled PayMongo billing requires the PayMongo provider, live mode')
+            ->assertExitCode(Command::FAILURE);
+    }
+
+    public function test_valid_live_paymongo_configuration_passes_without_contacting_the_provider_or_displaying_secrets(): void
+    {
+        $this->livePayMongoConfiguration();
+        Http::preventStrayRequests();
+
+        $this->artisan('stockroom:preflight', ['--configuration-only' => true])
+            ->expectsOutput('Configuration checks passed. Database checks were skipped.')
+            ->doesntExpectOutputToContain('sk_live_private-fixture-never-display')
+            ->doesntExpectOutputToContain('whsec_live-private-fixture-never-display')
+            ->assertExitCode(Command::SUCCESS);
+
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['billing.payment_provider', 'simulation'])]
+    #[TestWith(['paymongo.mode', 'test'])]
+    #[TestWith(['paymongo.mode', 'invalid'])]
+    #[TestWith(['paymongo.secret_key', ''])]
+    #[TestWith(['paymongo.secret_key', 'sk_test_private-fixture-never-display'])]
+    #[TestWith(['paymongo.secret_key', 'sk_live_invalid secret-never-display'])]
+    #[TestWith(['paymongo.payment_methods', ['unsupported']])]
+    #[TestWith(['app.url', 'http://pos.shop-owned-by-test.dev'])]
+    public function test_production_rejects_live_checkout_with_an_invalid_configuration_boundary(string $field, mixed $value): void
+    {
+        $this->livePayMongoConfiguration();
+        config([$field => $value]);
+
+        $this->artisan('stockroom:preflight', ['--configuration-only' => true])
+            ->expectsOutputToContain('Enabled PayMongo billing requires the PayMongo provider, live mode')
+            ->doesntExpectOutputToContain('private-fixture-never-display')
+            ->doesntExpectOutputToContain('invalid secret-never-display')
+            ->assertExitCode(Command::FAILURE);
+    }
+
+    #[TestWith([''])]
+    #[TestWith(['   '])]
+    public function test_production_rejects_enabled_live_checkout_without_a_signing_secret(string $secret): void
+    {
+        $this->livePayMongoConfiguration();
+        config(['paymongo.webhook_secret' => $secret]);
+
+        $this->artisan('stockroom:preflight', ['--configuration-only' => true])
+            ->expectsOutputToContain('Configure a PayMongo live webhook signing secret before enabling checkout')
             ->assertExitCode(Command::FAILURE);
     }
 
@@ -188,6 +249,29 @@ class ProductionReadinessTest extends TestCase
         $this->assertDatabaseCount('paymongo_webhook_events', 1);
     }
 
+    public function test_live_payment_records_pass_full_preflight_and_remain_unchanged(): void
+    {
+        $invoice = BillingInvoice::factory()->create(['status' => 'paid', 'payment_provider' => 'paymongo', 'payment_mode' => 'live']);
+        $attempt = BillingPaymentAttempt::factory()->for($invoice, 'invoice')->create(['mode' => 'live', 'status' => 'paid']);
+        $receipt = PayMongoWebhookEvent::factory()->create(['mode' => 'live', 'status' => 'processed']);
+        $invoiceBefore = $invoice->refresh()->getAttributes();
+        $attemptBefore = $attempt->refresh()->getAttributes();
+        $receiptBefore = $receipt->refresh()->getAttributes();
+        $this->livePayMongoConfiguration();
+        config(['database.default' => 'sqlite']);
+        Http::preventStrayRequests();
+
+        $this->artisan('stockroom:preflight', ['--allow-sqlite' => true])
+            ->expectsOutput('Configuration and database checks passed.')
+            ->doesntExpectOutputToContain('private-fixture-never-display')
+            ->assertExitCode(Command::SUCCESS);
+
+        $this->assertSame($invoiceBefore, $invoice->refresh()->getAttributes());
+        $this->assertSame($attemptBefore, $attempt->refresh()->getAttributes());
+        $this->assertSame($receiptBefore, $receipt->refresh()->getAttributes());
+        Http::assertNothingSent();
+    }
+
     #[TestWith(['monitoring_events'])]
     #[TestWith(['system_heartbeats'])]
     #[TestWith(['billing_payment_attempts'])]
@@ -210,6 +294,7 @@ class ProductionReadinessTest extends TestCase
     }
 
     #[TestWith(['billing_invoices', 'payment_mode'])]
+    #[TestWith(['paymongo_webhook_events', 'mode'])]
     #[TestWith(['tenants', 'operations_paused'])]
     public function test_missing_release_column_is_reported_without_attempting_an_invalid_data_query(string $table, string $column): void
     {

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\PayMongoClient;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
@@ -15,7 +16,7 @@ use Throwable;
 #[Description('Check production configuration without changing data or displaying secrets')]
 class CheckProductionReadiness extends Command
 {
-    public function handle(): int
+    public function handle(PayMongoClient $paymongo): int
     {
         $failures = [];
         $warnings = [];
@@ -28,7 +29,11 @@ class CheckProductionReadiness extends Command
         $this->check(! config('stockroom.demo_enabled'), 'DEMO_ENABLED must be false.', $failures);
         $this->check(! config('billing.simulations_enabled'), 'BILLING_SIMULATIONS_ENABLED must be false.', $failures);
         $this->check(! config('commerce.simulations_enabled'), 'COMMERCE_SIMULATIONS_ENABLED must be false.', $failures);
-        $this->check(! config('paymongo.enabled', false), 'PAYMONGO_ENABLED must be false. PayMongo billing is test-only in this release.', $failures);
+        if (config('paymongo.enabled', false)) {
+            $paymentConfiguration = $paymongo->configuration();
+            $this->check($paymentConfiguration['provider'] === 'paymongo' && $paymentConfiguration['mode'] === 'live' && $paymentConfiguration['configured'], 'Enabled PayMongo billing requires the PayMongo provider, live mode, a matching live secret key, an allowed payment method, and valid HTTPS checkout return URLs.', $failures);
+            $this->check($paymentConfiguration['webhook_configured'], 'Configure a PayMongo live webhook signing secret before enabling checkout.', $failures);
+        }
         $this->check(! $this->hasPayMongoTestCredentials(), 'Remove PayMongo test credentials from production configuration.', $failures);
         $this->check((bool) config('session.secure'), 'Session cookies must require HTTPS.', $failures);
         $this->check(in_array(config('session.same_site'), ['lax', 'strict'], true), 'Session cookies must use SameSite lax or strict.', $failures);
@@ -171,7 +176,7 @@ class CheckProductionReadiness extends Command
             if (Schema::hasTable('users')) {
                 $this->check(Schema::hasColumn('users', 'is_active'), 'Staff access migration is missing. Run the release migrations.', $failures);
             }
-            foreach (['tenants' => ['operations_paused'], 'sales' => ['returned_cents', 'price_tier', 'cash_session_id', 'source', 'channel_id'], 'stocks' => ['reserved_quantity'], 'products' => ['wholesale_price_cents', 'product_family_id', 'variant_options', 'variant_key'], 'purchase_orders' => ['source', 'reorder_rule_id', 'approved_at', 'cancelled_at'], 'billing_invoices' => ['payment_provider', 'payment_mode'], 'billing_payment_attempts' => ['tenant_id', 'billing_invoice_id', 'mode', 'amount_cents', 'currency', 'status']] as $table => $columns) {
+            foreach (['tenants' => ['operations_paused'], 'sales' => ['returned_cents', 'price_tier', 'cash_session_id', 'source', 'channel_id'], 'stocks' => ['reserved_quantity'], 'products' => ['wholesale_price_cents', 'product_family_id', 'variant_options', 'variant_key'], 'purchase_orders' => ['source', 'reorder_rule_id', 'approved_at', 'cancelled_at'], 'billing_invoices' => ['payment_provider', 'payment_mode'], 'billing_payment_attempts' => ['tenant_id', 'billing_invoice_id', 'mode', 'amount_cents', 'currency', 'status'], 'paymongo_webhook_events' => ['mode']] as $table => $columns) {
                 if (Schema::hasTable($table)) {
                     foreach ($columns as $column) {
                         $this->check(Schema::hasColumn($table, $column), 'Required database column is missing: '.$table.'.'.$column.'. Run the release migrations.', $failures);
@@ -187,8 +192,8 @@ class CheckProductionReadiness extends Command
             if (Schema::hasTable('billing_payment_attempts') && Schema::hasColumn('billing_payment_attempts', 'mode')) {
                 $this->check(! DB::table('billing_payment_attempts')->where('mode', 'test')->exists(), 'The production database contains PayMongo test payment attempts.', $failures);
             }
-            if (Schema::hasTable('paymongo_webhook_events')) {
-                $this->check(! DB::table('paymongo_webhook_events')->exists(), 'The production database contains PayMongo test webhook receipts.', $failures);
+            if (Schema::hasTable('paymongo_webhook_events') && Schema::hasColumn('paymongo_webhook_events', 'mode')) {
+                $this->check(! DB::table('paymongo_webhook_events')->where('mode', 'test')->exists(), 'The production database contains PayMongo test webhook receipts.', $failures);
             }
             if (Schema::hasTable('commerce_channels')) {
                 $this->check(! DB::table('commerce_channels')->exists(), 'The production database contains simulated commerce channels. Keep local practice records separate from live commerce.', $failures);

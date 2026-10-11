@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\PayMongoClient;
 use App\Services\SiteContentService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
@@ -9,14 +10,14 @@ use Illuminate\Http\Request;
 
 class SiteContentController extends Controller
 {
-    public function home(SiteContentService $content): View
+    public function home(SiteContentService $content, PayMongoClient $payments): View
     {
-        return view('landing', ['site' => $content->state()['published'], 'plans' => config('billing.plans'), 'draftPreview' => false]);
+        return view('landing', ['site' => $content->state()['published'], 'plans' => config('billing.plans'), 'draftPreview' => false, 'paymentConfig' => $payments->configuration()]);
     }
 
-    public function preview(SiteContentService $content): View
+    public function preview(SiteContentService $content, PayMongoClient $payments): View
     {
-        return view('landing', ['site' => $content->state()['draft'], 'plans' => config('billing.plans'), 'draftPreview' => true]);
+        return view('landing', ['site' => $content->state()['draft'], 'plans' => config('billing.plans'), 'draftPreview' => true, 'paymentConfig' => $payments->configuration()]);
     }
 
     public function show(SiteContentService $content): JsonResponse

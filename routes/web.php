@@ -23,17 +23,20 @@ use App\Http\Controllers\SiteContentController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\TeamController;
 use App\Http\Controllers\WorkspaceController;
+use App\Services\PayMongoClient;
+use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Route;
 
 require __DIR__.'/developer.php';
 require __DIR__.'/social-auth.php';
 
 Route::get('/', [SiteContentController::class, 'home'])->name('home');
-Route::view('/guide', 'guide')->name('guide');
-Route::view('/privacy', 'privacy')->name('privacy');
+Route::get('/guide', fn (PayMongoClient $payments): View => view('guide', ['paymentConfig' => $payments->configuration()]))->name('guide');
+Route::get('/privacy', fn (PayMongoClient $payments): View => view('privacy', ['paymentConfig' => $payments->configuration()]))->name('privacy');
 Route::get('/health', [WorkspaceController::class, 'health'])->middleware('throttle:30,1');
 Route::post('/events', [AnalyticsController::class, 'store'])->middleware('throttle:30,1');
 Route::post('/webhooks/paymongo/test', PayMongoWebhookController::class)->middleware('throttle:120,1,paymongo-webhook:')->name('paymongo.test.webhook');
+Route::post('/webhooks/paymongo', PayMongoWebhookController::class)->middleware('throttle:120,1,paymongo-webhook:')->name('paymongo.webhook');
 Route::middleware('guest')->group(function (): void {
     Route::get('/login', [AuthController::class, 'loginForm'])->name('login');
     Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:6,1');

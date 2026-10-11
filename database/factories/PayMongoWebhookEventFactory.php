@@ -22,6 +22,7 @@ class PayMongoWebhookEventFactory extends Factory
             'payload_digest' => hash('sha256', fake()->uuid()),
             'session_id' => 'cs_'.fake()->unique()->lexify('????????????????'),
             'reference' => fake()->uuid(),
+            'mode' => 'test',
             'status' => 'queued',
             'processed_at' => null,
             'failure_summary' => null,

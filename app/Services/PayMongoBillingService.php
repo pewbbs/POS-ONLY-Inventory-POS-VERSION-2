@@ -29,10 +29,13 @@ class PayMongoBillingService
             $tenant = $this->lockAdministrator($actor);
             $invoice = BillingInvoice::where('tenant_id', $tenant->id)->lockForUpdate()->findOrFail($invoiceId);
             $latest = $invoice->paymentAttempts()->latest('id')->lockForUpdate()->first();
+            if ($latest) {
+                $this->assertAttemptMode($latest);
+            }
             if ($latest && in_array($latest->status, ['paid', 'needs_review'], true)) {
                 return [$latest, false];
             }
-            if ($latest && $this->containsQrPh($latest)) {
+            if ($latest && $this->containsUnsafeQrPh($latest)) {
                 throw ValidationException::withMessages(['payment' => 'This older checkout includes QR Ph. Recheck its known session or reconcile it with the provider before creating another checkout.']);
             }
             if ($latest && in_array($latest->status, ['creating', 'unknown'], true) && $latest->session_id === null) {
@@ -40,7 +43,7 @@ class PayMongoBillingService
             }
             if (BillingPaymentAttempt::where('tenant_id', $tenant->id)->where('billing_invoice_id', '!=', $invoice->id)
                 ->whereIn('status', ['creating', 'pending', 'unknown', 'needs_review'])->exists()) {
-                throw ValidationException::withMessages(['payment' => 'Resolve the outstanding PayMongo test checkout before starting another invoice.']);
+                throw ValidationException::withMessages(['payment' => 'Resolve the outstanding PayMongo checkout before starting another invoice.']);
             }
             $this->billing->assertInvoicePayable($tenant, $invoice);
             if ($latest && $latest->session_id !== null && ! in_array($latest->status, ['failed', 'expired'], true)) {
@@ -49,22 +52,22 @@ class PayMongoBillingService
             if ($latest && $latest->active_scope !== null) {
                 return [$latest, false];
             }
-            if ($invoice->currency !== 'PHP' || ! is_numeric($invoice->amount_cents) || (int) $invoice->amount_cents <= 0) {
-                throw ValidationException::withMessages(['payment' => 'This invoice does not have a payable PHP amount.']);
+            if ($invoice->currency !== 'PHP' || ! is_numeric($invoice->amount_cents) || (int) $invoice->amount_cents < 100) {
+                throw ValidationException::withMessages(['payment' => 'This invoice must have a payable amount of at least PHP 1.00.']);
             }
             $reference = (string) Str::uuid();
 
             return [BillingPaymentAttempt::create([
                 'tenant_id' => $tenant->id, 'billing_invoice_id' => $invoice->id, 'initiated_by' => $actor->id,
                 'reference' => $reference, 'active_scope' => 'invoice:'.$invoice->id, 'status' => 'creating',
-                'amount_cents' => (int) $invoice->amount_cents, 'currency' => 'PHP', 'mode' => 'test',
+                'amount_cents' => (int) $invoice->amount_cents, 'currency' => 'PHP', 'mode' => $this->client->mode(),
                 'checkout_payload' => $this->payload($invoice, $reference), 'last_requested_at' => $this->now(),
                 'created_at' => $this->now(), 'updated_at' => $this->now(),
             ]), true];
         }, 5);
         if ($send) {
             $result = $this->client->createSession($attempt->checkout_payload, $attempt->reference);
-            if ($this->isSparseCreation($result)) {
+            if ($this->isSparseCreation($result, $attempt)) {
                 [$attempt, $retrieve] = $this->rememberCreatedSession($attempt, $result['data']['id']);
                 if ($retrieve) {
                     $attempt = $this->applyResponse($attempt, $this->client->retrieveSession($attempt->session_id), false);
@@ -86,6 +89,9 @@ class PayMongoBillingService
             $invoice = BillingInvoice::where('tenant_id', $tenant->id)->findOrFail($invoiceId);
 
             $latest = $invoice->paymentAttempts()->latest('id')->lockForUpdate()->first();
+            if ($latest) {
+                $this->assertAttemptMode($latest);
+            }
             if ($latest && $latest->status === 'creating' && $latest->session_id === null && $this->time($latest->getRawOriginal('last_requested_at'))->lessThanOrEqualTo($this->now()->subSeconds(60))) {
                 $latest->update(['status' => 'unknown', 'failure_summary' => 'Checkout creation was not confirmed. Recover the existing provider session before starting another checkout.']);
             }
@@ -93,7 +99,7 @@ class PayMongoBillingService
             return $latest;
         }, 5);
         if ($attempt === null) {
-            return ['attempt' => null, 'checkout_url' => null, 'message' => 'No PayMongo test checkout has been started for this invoice.'];
+            return ['attempt' => null, 'checkout_url' => null, 'message' => 'No PayMongo checkout has been started for this invoice.'];
         }
         if ($attempt->session_id !== null && ! in_array($attempt->status, ['paid', 'needs_review'], true)) {
             $attempt = $this->applyResponse($attempt, $this->client->retrieveSession($attempt->session_id), false);
@@ -164,6 +170,7 @@ class PayMongoBillingService
         if ($attempt === null || ($attempt->session_id === null && ! in_array($attempt->status, ['creating', 'unknown'], true))) {
             throw ValidationException::withMessages(['payment' => 'This invoice has no unresolved checkout to recover.']);
         }
+        $this->assertAttemptMode($attempt);
         if (($attempt->session_id !== null && $attempt->session_id !== $sessionId)
             || BillingPaymentAttempt::where('session_id', $sessionId)->whereKeyNot($attempt->id)->exists()) {
             throw $this->invalidRecovery();
@@ -177,10 +184,13 @@ class PayMongoBillingService
         return ValidationException::withMessages(['session_id' => 'This provider session could not be verified for this invoice. The existing billing record was preserved.']);
     }
 
-    /** Called with sanitized identifiers from an authenticated test webhook. */
-    public function processSession(string $sessionId, ?string $reference = null): void
+    /** Called with sanitized identifiers from an authenticated, mode-specific webhook. */
+    public function processSession(string $sessionId, ?string $reference = null, ?string $mode = null): void
     {
         $this->client->assertEnabled();
+        if ($mode !== null && $mode !== $this->client->mode()) {
+            throw new RuntimeException('PayMongo webhook mode does not match the current configuration.');
+        }
         if (! PayMongoClient::validSessionId($sessionId)) {
             return;
         }
@@ -188,30 +198,34 @@ class PayMongoBillingService
         if ($attempt === null && $reference !== null && Str::isUuid($reference)) {
             $attempt = BillingPaymentAttempt::where('reference', $reference)->whereNull('session_id')->first();
         }
-        if ($attempt === null || ($reference !== null && $reference !== $attempt->reference) || in_array($attempt->status, ['paid', 'needs_review'], true)) {
+        if ($attempt === null || ($reference !== null && $reference !== $attempt->reference)) {
+            return;
+        }
+        $this->assertAttemptMode($attempt);
+        if (in_array($attempt->status, ['paid', 'needs_review'], true)) {
             return;
         }
         $result = $this->client->retrieveSession($sessionId);
         if ($result['outcome'] !== 'received') {
-            throw new RuntimeException('PayMongo test checkout status could not be confirmed.');
+            throw new RuntimeException('PayMongo checkout status could not be confirmed.');
         }
         if (($result['data']['id'] ?? null) !== $sessionId) {
-            throw new RuntimeException('PayMongo test checkout verification did not match the requested record.');
+            throw new RuntimeException('PayMongo checkout verification did not match the requested record.');
         }
         $updated = $this->applyResponse($attempt, $result, false);
         if (! in_array($updated->status, ['paid', 'needs_review'], true)) {
-            throw new RuntimeException('PayMongo test payment could not be verified for this checkout record.');
+            throw new RuntimeException('PayMongo payment could not be verified for this checkout record.');
         }
     }
 
-    private function isSparseCreation(array $result): bool
+    private function isSparseCreation(array $result, BillingPaymentAttempt $attempt): bool
     {
         $session = $result['data'] ?? null;
         $attributes = is_array($session) ? ($session['attributes'] ?? null) : null;
 
         return ($result['outcome'] ?? null) === 'received' && is_array($session) && is_array($attributes)
             && ($session['type'] ?? null) === 'checkout_session' && is_string($session['id'] ?? null)
-            && PayMongoClient::validSessionId($session['id']) && ($attributes['livemode'] ?? null) === false
+            && PayMongoClient::validSessionId($session['id']) && ($attributes['livemode'] ?? null) === ($attempt->mode === 'live')
             && array_diff(array_keys($attributes), ['checkout_url', 'livemode', 'created_at', 'updated_at']) === []
             && $this->validCheckoutUrl($attributes['checkout_url'] ?? null);
     }
@@ -222,6 +236,7 @@ class PayMongoBillingService
         return DB::transaction(function () use ($candidate, $sessionId): array {
             Tenant::whereKey($candidate->tenant_id)->lockForUpdate()->firstOrFail();
             $attempt = BillingPaymentAttempt::where('tenant_id', $candidate->tenant_id)->lockForUpdate()->findOrFail($candidate->id);
+            $this->assertAttemptMode($attempt);
             if (in_array($attempt->status, ['paid', 'needs_review', 'failed', 'expired'], true)) {
                 return [$attempt, false];
             }
@@ -252,6 +267,7 @@ class PayMongoBillingService
         return DB::transaction(function () use ($candidate, $result, $creating): BillingPaymentAttempt {
             Tenant::whereKey($candidate->tenant_id)->lockForUpdate()->firstOrFail();
             $attempt = BillingPaymentAttempt::where('tenant_id', $candidate->tenant_id)->lockForUpdate()->findOrFail($candidate->id);
+            $this->assertAttemptMode($attempt);
             if (in_array($attempt->status, ['paid', 'needs_review'], true)) {
                 return $attempt;
             }
@@ -262,7 +278,7 @@ class PayMongoBillingService
                 }
                 $failed = $creating && $result['outcome'] === 'failed' && $attempt->session_id === null;
                 $attempt->update(['status' => $failed ? 'failed' : 'unknown', 'active_scope' => $failed ? null : $attempt->active_scope,
-                    'failure_summary' => $failed ? 'PayMongo test checkout could not be created. Check the test configuration.' : 'PayMongo test checkout could not be confirmed. Recheck its known session or recover the existing provider session.']);
+                    'failure_summary' => $failed ? 'PayMongo checkout could not be created. Check the payment configuration.' : 'PayMongo checkout could not be confirmed. Recheck its known session or recover the existing provider session.']);
 
                 return $attempt;
             }
@@ -272,7 +288,7 @@ class PayMongoBillingService
                 if ($terminalUnpaid) {
                     return $attempt;
                 }
-                $attempt->update(['status' => 'unknown', 'failure_summary' => 'PayMongo test checkout did not match the stored invoice quote. No invoice payment was applied.']);
+                $attempt->update(['status' => 'unknown', 'failure_summary' => 'PayMongo checkout did not match the stored invoice quote. No invoice payment was applied.']);
 
                 return $attempt;
             }
@@ -281,7 +297,7 @@ class PayMongoBillingService
                 if ($terminalUnpaid) {
                     return $attempt;
                 }
-                $attempt->update(['status' => 'unknown', 'failure_summary' => 'PayMongo test payment details could not be verified.']);
+                $attempt->update(['status' => 'unknown', 'failure_summary' => 'PayMongo payment details could not be verified.']);
 
                 return $attempt;
             }
@@ -303,11 +319,11 @@ class PayMongoBillingService
                     if ($terminalUnpaid) {
                         return $attempt;
                     }
-                    $attempt->update(['status' => 'unknown', 'failure_summary' => 'PayMongo test payment details did not match this invoice. No payment was applied.']);
+                    $attempt->update(['status' => 'unknown', 'failure_summary' => 'PayMongo payment details did not match this invoice. No payment was applied.']);
 
                     return $attempt;
                 }
-                if ($payment['method'] === 'qrph') {
+                if ($payment['method'] === 'qrph' && $attempt->mode === 'test') {
                     return $this->billing->settleVerifiedAttempt($attempt, $payment['id'], $payment['paid_at'], $payment['method'], 'QR Ph payment evidence requires provider review. Subscription access was not changed by this confirmation.');
                 }
                 if (count($paid) !== 1 || ! empty($paid[0]['attributes']['refunds'])) {
@@ -317,13 +333,13 @@ class PayMongoBillingService
                 return $this->billing->settleVerifiedAttempt($attempt, $payment['id'], $payment['paid_at'], $payment['method']);
             }
             if (($attributes['status'] ?? null) === 'expired') {
-                $attempt->update(['status' => 'expired', 'active_scope' => null, 'checkout_url' => null, 'failure_summary' => 'This PayMongo test checkout has expired.']);
+                $attempt->update(['status' => 'expired', 'active_scope' => null, 'checkout_url' => null, 'failure_summary' => 'This PayMongo checkout has expired.']);
 
                 return $attempt;
             }
             $url = $attributes['checkout_url'] ?? null;
             if (($attributes['status'] ?? null) !== 'active' || ! $this->validCheckoutUrl($url)) {
-                $attempt->update(['status' => 'unknown', 'failure_summary' => 'PayMongo test checkout did not return a verified hosted checkout link.']);
+                $attempt->update(['status' => 'unknown', 'failure_summary' => 'PayMongo checkout did not return a verified hosted checkout link.']);
 
                 return $attempt;
             }
@@ -337,7 +353,8 @@ class PayMongoBillingService
     {
         if (! is_array($attributes) || ($session['type'] ?? null) !== 'checkout_session' || ! is_string($session['id'] ?? null)
             || ! PayMongoClient::validSessionId($session['id']) || ($attempt->session_id !== null && $attempt->session_id !== $session['id'])
-            || ($attributes['livemode'] ?? null) !== false || ($attributes['reference_number'] ?? null) !== $attempt->reference || $attempt->mode !== 'test') {
+            || ($attributes['livemode'] ?? null) !== ($attempt->mode === 'live') || ($attributes['reference_number'] ?? null) !== $attempt->reference
+            || ! in_array($attempt->mode, ['test', 'live'], true) || $attempt->mode !== $this->client->mode() || $attempt->currency !== 'PHP') {
             return false;
         }
         $items = $attributes['line_items'] ?? null;
@@ -353,7 +370,7 @@ class PayMongoBillingService
         $attributes = $payment['attributes'] ?? null;
         $id = $payment['id'] ?? null;
         if (($payment['type'] ?? null) !== 'payment' || ! is_array($attributes) || ! is_string($id) || preg_match('/^pay_[A-Za-z0-9_]{1,80}$/D', $id) !== 1
-            || ($attributes['livemode'] ?? null) !== false || ($attributes['amount'] ?? null) !== $attempt->amount_cents
+            || ($attributes['livemode'] ?? null) !== ($attempt->mode === 'live') || ($attributes['amount'] ?? null) !== $attempt->amount_cents
             || ($attributes['currency'] ?? null) !== 'PHP' || ! is_int($attributes['paid_at'] ?? null)) {
             return null;
         }
@@ -385,26 +402,27 @@ class PayMongoBillingService
     private function envelope(BillingPaymentAttempt $attempt): array
     {
         $invoice = BillingInvoice::where('tenant_id', $attempt->tenant_id)->findOrFail($attempt->billing_invoice_id);
+        $mode = $attempt->mode === 'live' ? 'live' : 'test';
         $message = match ($attempt->status) {
-            'paid' => 'PayMongo test payment confirmed. This invoice is paid.',
+            'paid' => 'PayMongo '.$mode.' payment confirmed. This invoice is paid.',
             'needs_review' => 'This checkout needs review. Subscription access was not changed by this confirmation.',
-            'pending' => 'Your PayMongo test checkout is ready. Payment will be confirmed on the server.',
-            'expired' => 'This test checkout expired. Start a new checkout if the invoice is still open.',
-            'failed' => 'Test checkout could not be created. Check the test configuration before trying again.',
-            'creating' => 'This test checkout is being created. Recheck this record before starting another.',
-            default => $attempt->session_id === null ? 'Checkout creation is unresolved. Recover the existing provider session before starting another checkout.' : 'Test checkout could not be confirmed. Recheck this stored session.',
+            'pending' => 'Your PayMongo '.$mode.' checkout is ready. Payment will be confirmed on the server.',
+            'expired' => 'This checkout expired. Start a new checkout if the invoice is still open.',
+            'failed' => 'Checkout could not be created. Check the payment configuration before trying again.',
+            'creating' => 'This checkout is being created. Recheck this record before starting another.',
+            default => $attempt->session_id === null ? 'Checkout creation is unresolved. Recover the existing provider session before starting another checkout.' : 'Checkout could not be confirmed. Recheck this stored session.',
         };
 
-        if ($this->containsQrPh($attempt) && ! in_array($attempt->status, ['paid', 'needs_review'], true)) {
+        if ($this->containsUnsafeQrPh($attempt) && ! in_array($attempt->status, ['paid', 'needs_review'], true)) {
             $message = 'This older checkout includes QR Ph. Do not reopen or scan it. Recheck its known session or reconcile it with the provider.';
         }
 
-        return ['attempt' => $attempt->safeRecord(), 'checkout_url' => $attempt->status === 'pending' && $invoice->status === 'open' && ! $this->containsQrPh($attempt) ? $attempt->checkout_url : null, 'message' => $message];
+        return ['attempt' => $attempt->safeRecord(), 'checkout_url' => $attempt->status === 'pending' && $invoice->status === 'open' && ! $this->containsUnsafeQrPh($attempt) ? $attempt->checkout_url : null, 'message' => $message];
     }
 
-    private function containsQrPh(BillingPaymentAttempt $attempt): bool
+    private function containsUnsafeQrPh(BillingPaymentAttempt $attempt): bool
     {
-        return in_array('qrph', (array) ($attempt->checkout_payload['data']['attributes']['payment_method_types'] ?? []), true);
+        return $attempt->mode === 'test' && in_array('qrph', (array) ($attempt->checkout_payload['data']['attributes']['payment_method_types'] ?? []), true);
     }
 
     private function validCheckoutUrl(mixed $url): bool
@@ -424,6 +442,13 @@ class PayMongoBillingService
         $this->authorize($actor, true);
 
         return $tenant;
+    }
+
+    private function assertAttemptMode(BillingPaymentAttempt $attempt): void
+    {
+        if ($attempt->mode !== $this->client->mode()) {
+            throw ValidationException::withMessages(['payment' => 'This checkout belongs to another PayMongo mode. Its billing record was preserved; reconcile it in the matching provider environment.']);
+        }
     }
 
     private function authorize(User $actor, bool $lock = false): void

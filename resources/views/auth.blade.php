@@ -2,7 +2,7 @@
     $mode = $mode ?? 'login';
     $copy = [
         'login' => ['title' => 'Welcome back', 'heading' => 'Good to have you back.', 'subtitle' => 'Log in to pick up right where you left off.', 'button' => 'Log in to POSONLY', 'route' => 'login'],
-        'register' => ['title' => 'Create your workspace', 'heading' => 'Your space. Your business.', 'subtitle' => 'Create a free workspace and start with a clean slate.', 'button' => 'Create my workspace', 'route' => 'register'],
+        'register' => ['title' => 'Create your workspace', 'heading' => 'Your space. Your business.', 'subtitle' => 'Start your free trial with a clean slate.', 'button' => 'Create my workspace', 'route' => 'register'],
         'forgot' => ['title' => 'Recover your account', 'heading' => 'Let’s get you back in.', 'subtitle' => 'Enter your work email and we’ll help you reset your password.', 'button' => 'Send reset link', 'route' => 'password.email'],
         'reset' => ['title' => 'Reset your password', 'heading' => 'Make a fresh start.', 'subtitle' => 'Choose a new password to get back to your workspace.', 'button' => 'Save new password', 'route' => 'password.update'],
     ][$mode];
@@ -99,7 +99,7 @@
                 <label for="password_confirmation">Confirm {{ $mode === 'reset' ? 'new password' : 'password' }}</label>
                 <input type="password" id="password_confirmation" name="password_confirmation" placeholder="One more time" autocomplete="new-password" required minlength="10" maxlength="255">
             @endif
-            @if($mode === 'register')<p class="signup-note">Free workspace in this build. No payment is taken.</p>@endif
+            @if($mode === 'register')<p class="signup-note">Start with a {{ config('billing.trial_days') }}-day free trial. Creating your workspace does not collect payment.</p>@endif
             @if($mode === 'forgot')<p class="recovery-note">Links expire in {{ config('auth.passwords.'.config('auth.defaults.passwords').'.expire') }} minutes. If your account is paused, ask your administrator for help.</p>@endif
             @if($mode === 'reset')<p class="recovery-note">Saving your new password signs you out on other devices. Sign in again to continue.</p>@endif
             <button class="submit-button" type="submit">{{ $copy['button'] }}<span>↗</span></button>

@@ -39,11 +39,18 @@ class PayMongoWebhookTest extends TestCase
         parent::tearDown();
     }
 
-    private function payload(bool $classic = false): array
+    private function configureLive(): void
     {
-        $event = ['type' => 'checkout_session.payment.paid', 'livemode' => false, 'data' => [
+        config(['paymongo.mode' => 'live', 'paymongo.secret_key' => 'sk_live_fixture',
+            'paymongo.webhook_secret' => 'whsec_fixture', 'paymongo.payment_methods' => ['qrph'], 'app.url' => 'https://posonly.example']);
+        $this->app->detectEnvironment(fn (): string => 'production');
+    }
+
+    private function payload(bool $classic = false, bool $live = false): array
+    {
+        $event = ['type' => 'checkout_session.payment.paid', 'livemode' => $live, 'data' => [
             'id' => 'cs_webhook_fixture', 'type' => 'checkout_session', 'attributes' => [
-                'livemode' => false, 'reference_number' => 'a04db954-67d8-420d-bc91-d0779ee16859',
+                'livemode' => $live, 'reference_number' => 'a04db954-67d8-420d-bc91-d0779ee16859',
                 'checkout_url' => 'https://checkout.paymongo.com/private-fixture-link',
                 'payments' => [['id' => 'pay_untrusted_webhook', 'attributes' => ['status' => 'paid', 'amount' => 1, 'currency' => 'USD',
                     'billing' => ['name' => 'private-payer-fixture', 'email' => 'private-payer@example.test'], 'livemode' => true]]],
@@ -58,15 +65,89 @@ class PayMongoWebhookTest extends TestCase
     {
         $timestamp ??= now()->timestamp;
 
-        return 't='.$timestamp.',te='.hash_hmac('sha256', $timestamp.'.'.$body, 'whsec_fixture').',li=';
+        $modeField = config('paymongo.mode') === 'live' ? 'li' : 'te';
+
+        return 't='.$timestamp.','.$modeField.'='.hash_hmac('sha256', $timestamp.'.'.$body, 'whsec_fixture');
     }
 
-    private function send(string $body, ?string $signature = null): TestResponse
+    private function send(string $body, ?string $signature = null, string $path = '/webhooks/paymongo/test'): TestResponse
     {
-        return $this->call('POST', '/webhooks/paymongo/test', [], [], [], [
+        return $this->call('POST', $path, [], [], [], [
             'CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json',
             'HTTP_PAYMONGO_SIGNATURE' => $signature ?? $this->signature($body),
         ], $body);
+    }
+
+    #[TestWith([false, false])]
+    #[TestWith([false, true])]
+    #[TestWith([true, false])]
+    #[TestWith([true, true])]
+    public function test_live_signed_notification_accepts_documented_mode_omission_and_stores_only_safe_identifiers(bool $classic, bool $omitNestedMode): void
+    {
+        $this->configureLive();
+        $payload = $this->payload($classic, true);
+        if ($omitNestedMode) {
+            if ($classic) {
+                unset($payload['data']['attributes']['data']['attributes']['livemode']);
+            } else {
+                unset($payload['data']['data']['attributes']['livemode']);
+            }
+        }
+        $body = json_encode($payload, JSON_THROW_ON_ERROR);
+
+        $this->send($body, null, '/webhooks/paymongo')->assertOk()->assertJsonPath('status', 'queued');
+        $this->send($body, null, '/webhooks/paymongo')->assertOk()->assertJsonPath('status', 'received');
+
+        $receipt = PayMongoWebhookEvent::firstOrFail();
+        $this->assertSame('live', $receipt->mode);
+        $this->assertSame('cs_webhook_fixture', $receipt->session_id);
+        $this->assertStringNotContainsString('private-payer', json_encode($receipt->getAttributes(), JSON_THROW_ON_ERROR));
+        Queue::assertPushed(ProcessPayMongoWebhook::class, fn (ProcessPayMongoWebhook $job): bool => $job->eventId === $receipt->id);
+        Queue::assertCount(1);
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['event', false])]
+    #[TestWith(['event', 'true'])]
+    #[TestWith(['session', false])]
+    #[TestWith(['session', null])]
+    public function test_live_webhook_rejects_test_or_non_boolean_explicit_modes(string $target, mixed $mode): void
+    {
+        $this->configureLive();
+        $payload = $this->payload(false, true);
+        if ($target === 'event') {
+            $payload['data']['livemode'] = $mode;
+        } else {
+            $payload['data']['data']['attributes']['livemode'] = $mode;
+        }
+
+        $this->send(json_encode($payload, JSON_THROW_ON_ERROR), null, '/webhooks/paymongo')->assertUnprocessable();
+
+        Queue::assertNothingPushed();
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('paymongo_webhook_events', 0);
+    }
+
+    public function test_live_handler_requires_live_signature_and_legacy_test_path_cannot_accept_live_notifications(): void
+    {
+        $this->configureLive();
+        $body = json_encode($this->payload(false, true), JSON_THROW_ON_ERROR);
+        $testSignature = 't='.now()->timestamp.',te='.hash_hmac('sha256', now()->timestamp.'.'.$body, 'whsec_fixture');
+
+        $this->send($body, $testSignature, '/webhooks/paymongo')->assertUnauthorized();
+        $this->send($body)->assertNotFound();
+
+        Queue::assertNothingPushed();
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('paymongo_webhook_events', 0);
+    }
+
+    public function test_stable_webhook_path_also_accepts_configured_test_signature_without_accepting_live_data(): void
+    {
+        $this->send(json_encode($this->payload(), JSON_THROW_ON_ERROR), null, '/webhooks/paymongo')->assertOk();
+        $this->assertSame('test', PayMongoWebhookEvent::firstOrFail()->mode);
+        Queue::assertCount(1);
+        Http::assertNothingSent();
     }
 
     #[TestWith([false])]
@@ -247,16 +328,19 @@ class PayMongoWebhookTest extends TestCase
         Http::assertNothingSent();
     }
 
-    private function checkout(): BillingPaymentAttempt
+    private function checkout(bool $live = false): BillingPaymentAttempt
     {
         $user = User::factory()->create(['tenant_id' => Tenant::factory(), 'role' => 'admin']);
         app(BillingService::class)->checkout($user);
         $invoice = BillingInvoice::where('tenant_id', $user->tenant_id)->firstOrFail();
-        Http::fake(['https://api.paymongo.com/v2/checkout_sessions' => function ($request) {
+        if ($live) {
+            $this->configureLive();
+        }
+        Http::fake(['https://api.paymongo.com/v2/checkout_sessions' => function ($request) use ($live) {
             $quote = $request->data()['data']['attributes'];
 
             return Http::response(['data' => ['id' => 'cs_webhook_fixture', 'type' => 'checkout_session', 'attributes' => [
-                'livemode' => false, 'reference_number' => $quote['reference_number'], 'line_items' => $quote['line_items'],
+                'livemode' => $live, 'reference_number' => $quote['reference_number'], 'line_items' => $quote['line_items'],
                 'status' => 'active', 'checkout_url' => 'https://checkout.paymongo.com/private-fixture-link', 'payments' => [],
             ]]], 201);
         }]);
@@ -268,9 +352,10 @@ class PayMongoWebhookTest extends TestCase
 
     private function queueAttempt(BillingPaymentAttempt $attempt): PayMongoWebhookEvent
     {
-        $payload = $this->payload();
+        $live = $attempt->mode === 'live';
+        $payload = $this->payload(false, $live);
         $payload['data']['data']['attributes']['reference_number'] = $attempt->reference;
-        $this->send(json_encode($payload, JSON_THROW_ON_ERROR))->assertOk()->assertJsonPath('status', 'queued');
+        $this->send(json_encode($payload, JSON_THROW_ON_ERROR), null, $live ? '/webhooks/paymongo' : '/webhooks/paymongo/test')->assertOk()->assertJsonPath('status', 'queued');
 
         return PayMongoWebhookEvent::firstOrFail();
     }
@@ -325,7 +410,7 @@ class PayMongoWebhookTest extends TestCase
             $job->handle(app(PayMongoBillingService::class));
             $this->fail('Unverified payment must fail so the worker can retry.');
         } catch (RuntimeException $exception) {
-            $this->assertSame('PayMongo test payment verification is temporarily unavailable.', $exception->getMessage());
+            $this->assertSame('PayMongo payment verification is temporarily unavailable.', $exception->getMessage());
             $this->assertNull($exception->getPrevious());
             $job->failed($exception);
         }
@@ -348,5 +433,60 @@ class PayMongoWebhookTest extends TestCase
             ->assertJsonPath('message', 'Billing is temporarily unavailable. Refresh billing or recheck the invoice payment.');
         $response->assertDontSee('private-provider-secret')->assertDontSee('provider-response-fixture')->assertDontSee('/private/path');
         $this->assertArrayNotHasKey('exception', $response->json());
+    }
+
+    public function test_live_queue_job_ignores_notification_payment_claims_and_settles_only_retrieved_live_qr_ph_payment_once(): void
+    {
+        $this->freezeTime();
+        $attempt = $this->checkout(true);
+        $receipt = $this->queueAttempt($attempt);
+        Http::fake(['https://api.paymongo.com/v1/checkout_sessions/cs_webhook_fixture' => Http::response([
+            'data' => ['id' => $attempt->session_id, 'type' => 'checkout_session', 'attributes' => [
+                'livemode' => true, 'reference_number' => $attempt->reference,
+                'line_items' => $attempt->checkout_payload['data']['attributes']['line_items'],
+                'status' => 'active', 'payments' => [['id' => 'pay_verified_live', 'type' => 'payment', 'attributes' => [
+                    'status' => 'paid', 'livemode' => true, 'amount' => $attempt->amount_cents, 'currency' => 'PHP',
+                    'paid_at' => now()->timestamp, 'source' => ['type' => 'qrph'], 'refunds' => [],
+                ]]],
+            ]],
+        ])]);
+        $job = new ProcessPayMongoWebhook($receipt->id);
+
+        $job->handle(app(PayMongoBillingService::class));
+        $periodEnd = $attempt->invoice->refresh()->period_end->toIso8601String();
+        $this->travel(3)->days();
+        $job->handle(app(PayMongoBillingService::class));
+
+        $this->assertSame('paid', $attempt->refresh()->status);
+        $this->assertSame('pay_verified_live', $attempt->payment_id);
+        $this->assertSame('live', $attempt->invoice->payment_mode);
+        $this->assertSame('qrph', $attempt->invoice->payment_method);
+        $this->assertSame($periodEnd, $attempt->invoice->refresh()->period_end->toIso8601String());
+        $this->assertSame('processed', $receipt->refresh()->status);
+        $this->assertSame('live', $receipt->mode);
+        Http::assertSentCount(1);
+    }
+
+    public function test_queued_test_receipt_cannot_use_live_configuration_or_contact_provider_after_mode_change(): void
+    {
+        $attempt = $this->checkout();
+        $receipt = $this->queueAttempt($attempt);
+        $before = $attempt->refresh()->getAttributes();
+        $this->configureLive();
+        Http::fake();
+        $job = new ProcessPayMongoWebhook($receipt->id);
+
+        try {
+            $job->handle(app(PayMongoBillingService::class));
+            $this->fail('A queued test receipt must not verify through a live connection.');
+        } catch (RuntimeException $error) {
+            $this->assertSame('PayMongo payment verification is temporarily unavailable.', $error->getMessage());
+            $job->failed($error);
+        }
+
+        $this->assertSame($before, $attempt->refresh()->getAttributes());
+        $this->assertSame('open', $attempt->invoice->refresh()->status);
+        $this->assertSame('failed', $receipt->refresh()->status);
+        Http::assertNothingSent();
     }
 }

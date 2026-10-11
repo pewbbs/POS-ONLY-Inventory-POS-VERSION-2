@@ -12,6 +12,7 @@ use App\Services\BillingService;
 use App\Services\PayMongoBillingService;
 use App\Services\PayMongoClient;
 use Carbon\CarbonImmutable;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Arr;
@@ -20,6 +21,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
 use RuntimeException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
@@ -41,6 +43,21 @@ class PayMongoBillingServiceTest extends TestCase
             'paymongo.webhook_secret' => null, 'paymongo.payment_methods' => ['card', 'gcash', 'qrph'],
             'app.url' => 'http://127.0.0.1:8010',
         ]);
+    }
+
+    protected function tearDown(): void
+    {
+        $this->app->detectEnvironment(fn (): string => 'testing');
+        parent::tearDown();
+    }
+
+    private function configureLive(): void
+    {
+        config(['paymongo.mode' => 'live', 'paymongo.secret_key' => 'sk_live_fixture',
+            'paymongo.webhook_secret' => 'whsec_live_fixture', 'paymongo.payment_methods' => ['qrph'],
+            'app.url' => 'https://posonly.example']);
+        $this->app->detectEnvironment(fn (): string => 'production');
+        Http::preventStrayRequests();
     }
 
     /** @return array{User, BillingInvoice} */
@@ -79,23 +96,184 @@ class PayMongoBillingServiceTest extends TestCase
     {
         return ['data' => [
             'id' => $sessionId, 'type' => 'checkout_session', 'attributes' => [
-                'reference_number' => $attempt->reference, 'livemode' => false, 'status' => 'active',
+                'reference_number' => $attempt->reference, 'livemode' => $attempt->mode === 'live', 'status' => 'active',
                 'line_items' => $attempt->checkout_payload['data']['attributes']['line_items'],
                 'checkout_url' => 'https://checkout.paymongo.com/'.$sessionId,
                 'payments' => $paid ? [['id' => $paymentId, 'type' => 'payment', 'attributes' => [
-                    'amount' => $attempt->amount_cents, 'currency' => 'PHP', 'livemode' => false,
+                    'amount' => $attempt->amount_cents, 'currency' => 'PHP', 'livemode' => $attempt->mode === 'live',
                     'status' => 'paid', 'paid_at' => now()->timestamp, 'source' => ['type' => 'card'], 'refunds' => [],
                 ]]] : [],
             ],
         ]];
     }
 
-    private function sparseCreation(string $sessionId = 'cs_sparse'): array
+    private function sparseCreation(string $sessionId = 'cs_sparse', bool $live = false): array
     {
         return ['data' => ['id' => $sessionId, 'type' => 'checkout_session', 'attributes' => [
             'checkout_url' => 'https://checkout.paymongo.com/'.$sessionId.'#hosted-fixture',
-            'livemode' => false, 'created_at' => now()->timestamp, 'updated_at' => now()->timestamp,
+            'livemode' => $live, 'created_at' => now()->timestamp, 'updated_at' => now()->timestamp,
         ]]];
+    }
+
+    public function test_live_qr_ph_sparse_checkout_verifies_exact_payment_and_activates_only_one_paid_period(): void
+    {
+        $this->freezeSecond();
+        [$owner, $invoice] = $this->invoice();
+        $this->configureLive();
+        Http::fake([
+            self::CREATE_URL => Http::response($this->sparseCreation('cs_live', true)),
+            self::RETRIEVE_URL.'cs_live' => function (): PromiseInterface {
+                $attempt = BillingPaymentAttempt::firstOrFail();
+                $resource = $this->checkoutSession($attempt, true, 'cs_live', 'pay_live');
+                $resource['data']['attributes']['payments'][0]['attributes']['source']['type'] = 'qrph';
+
+                return Http::response($resource);
+            },
+        ]);
+
+        $result = app(PayMongoBillingService::class)->startCheckout($owner, $invoice->id);
+        $attempt = BillingPaymentAttempt::firstOrFail();
+        $periodEnd = $invoice->refresh()->period_end->toIso8601String();
+        $this->travel(5)->days();
+        $recheck = app(PayMongoBillingService::class)->recheck($owner, $invoice->id);
+
+        $this->assertSame('paid', $result['attempt']['status']);
+        $this->assertSame('live', $result['attempt']['mode']);
+        $this->assertSame('paid', $recheck['attempt']['status']);
+        $this->assertSame('live', $invoice->payment_mode);
+        $this->assertSame('qrph', $invoice->payment_method);
+        $this->assertSame('paymongo_live', app(BillingService::class)->serializeInvoice($invoice)['payment_source']);
+        $this->assertSame($periodEnd, $invoice->refresh()->period_end->toIso8601String());
+        $this->assertNull($result['checkout_url']);
+        Http::assertSentCount(2);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+            && $request->hasHeader('Authorization', 'Basic '.base64_encode('sk_live_fixture:'))
+            && $request->hasHeader('Idempotency-Key', $attempt->reference)
+            && $request['data']['attributes']['payment_method_types'] === ['qrph']
+            && $request['data']['attributes']['pass_on_fees'] === false
+            && $request['data']['attributes']['success_url'] === 'https://posonly.example/app/billing?paymongo_return=success&invoice='.$invoice->id);
+        $this->assertFalse(app(BillingService::class)->simulationEnabled());
+    }
+
+    public function test_live_qr_ph_pending_checkout_is_reused_without_creating_another_session(): void
+    {
+        [$owner, $invoice] = $this->invoice();
+        $this->configureLive();
+        Http::fake([self::CREATE_URL => fn (): PromiseInterface => Http::response(
+            $this->checkoutSession(BillingPaymentAttempt::firstOrFail(), false, 'cs_live'),
+        )]);
+
+        $result = app(PayMongoBillingService::class)->startCheckout($owner, $invoice->id);
+        $repeat = app(PayMongoBillingService::class)->startCheckout($owner, $invoice->id);
+
+        $this->assertSame('pending', $result['attempt']['status']);
+        $this->assertSame('https://checkout.paymongo.com/cs_live', $result['checkout_url']);
+        $this->assertSame($result, $repeat);
+        $this->assertSame(['qrph'], app(PayMongoClient::class)->configuration()['payment_methods']);
+        $this->assertSame('open', $invoice->refresh()->status);
+        Http::assertSentCount(1);
+        $this->assertDatabaseCount('billing_payment_attempts', 1);
+    }
+
+    public function test_unknown_live_creation_never_repeats_post_and_can_recover_only_its_original_verified_session(): void
+    {
+        [$owner, $invoice] = $this->invoice();
+        $this->configureLive();
+        Http::fake([self::CREATE_URL => Http::response([], 503)]);
+        $first = app(PayMongoBillingService::class)->startCheckout($owner, $invoice->id);
+        app(PayMongoBillingService::class)->startCheckout($owner, $invoice->id);
+        $attempt = BillingPaymentAttempt::firstOrFail();
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST');
+        Http::fake([self::RETRIEVE_URL.'cs_recovered_live' => function () use ($attempt): PromiseInterface {
+            $resource = $this->checkoutSession($attempt, true, 'cs_recovered_live', 'pay_recovered_live');
+            $resource['data']['attributes']['payments'][0]['attributes']['source']['type'] = 'qrph';
+
+            return Http::response($resource);
+        }]);
+
+        $recovered = app(PayMongoBillingService::class)->recover($owner, $invoice->id, 'cs_recovered_live');
+
+        $this->assertSame('unknown', $first['attempt']['status']);
+        $this->assertSame('paid', $recovered['attempt']['status']);
+        $this->assertSame('live', $invoice->refresh()->payment_mode);
+        $this->assertDatabaseCount('billing_payment_attempts', 1);
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET');
+    }
+
+    #[TestWith(['startCheckout'])]
+    #[TestWith(['recheck'])]
+    #[TestWith(['recover'])]
+    public function test_historical_test_attempts_are_preserved_and_blocked_before_live_provider_requests(string $operation): void
+    {
+        [$owner, $invoice] = $this->invoice();
+        $attempt = $this->attempt($invoice);
+        $before = $attempt->refresh()->getAttributes();
+        $this->configureLive();
+
+        try {
+            app(PayMongoBillingService::class)->{$operation}($owner, $invoice->id, 'cs_existing');
+            $this->fail('A historical test attempt must not be checked with a live key.');
+        } catch (ValidationException $error) {
+            $this->assertStringContainsString('another PayMongo mode', $error->errors()['payment'][0]);
+        }
+
+        $this->assertSame($before, $attempt->refresh()->getAttributes());
+        $this->assertSame('open', $invoice->refresh()->status);
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['session', false])]
+    #[TestWith(['session', 'true'])]
+    #[TestWith(['payment', false])]
+    #[TestWith(['payment', 'true'])]
+    public function test_live_settlement_requires_strict_true_mode_on_both_session_and_payment(string $target, mixed $mode): void
+    {
+        [$owner, $invoice] = $this->invoice();
+        $attempt = $this->attempt($invoice, ['mode' => 'live']);
+        $this->configureLive();
+        $resource = $this->checkoutSession($attempt, true);
+        if ($target === 'session') {
+            $resource['data']['attributes']['livemode'] = $mode;
+        } else {
+            $resource['data']['attributes']['payments'][0]['attributes']['livemode'] = $mode;
+        }
+        Http::fake([self::RETRIEVE_URL.'cs_existing' => Http::response($resource)]);
+
+        $result = app(PayMongoBillingService::class)->recheck($owner, $invoice->id);
+
+        $this->assertSame('unknown', $result['attempt']['status']);
+        $this->assertSame('open', $invoice->refresh()->status);
+        $this->assertNull($invoice->paid_at);
+        $this->assertNull(Subscription::findOrFail($invoice->subscription_id)->current_period_end);
+        Http::assertSentCount(1);
+    }
+
+    #[TestWith(['local', 'live', 'sk_live_fixture', 'https://posonly.example', 'whsec_live_fixture'])]
+    #[TestWith(['testing', 'live', 'sk_live_fixture', 'https://posonly.example', 'whsec_live_fixture'])]
+    #[TestWith(['production', 'test', 'sk_test_fixture', 'https://posonly.example', 'whsec_live_fixture'])]
+    #[TestWith(['production', 'live', 'sk_test_fixture', 'https://posonly.example', 'whsec_live_fixture'])]
+    #[TestWith(['production', 'live', 'sk_live_fixture', 'http://posonly.example', 'whsec_live_fixture'])]
+    #[TestWith(['production', 'live', 'sk_live_fixture', 'https://posonly.example', ''])]
+    public function test_unsafe_live_configuration_is_disabled_without_provider_requests(string $environment, string $mode, string $key, string $url, string $webhookSecret): void
+    {
+        [$owner, $invoice] = $this->invoice();
+        config(['paymongo.mode' => $mode, 'paymongo.secret_key' => $key, 'paymongo.webhook_secret' => $webhookSecret, 'app.url' => $url]);
+        $this->app->detectEnvironment(fn (): string => $environment);
+        Http::preventStrayRequests();
+
+        try {
+            app(PayMongoBillingService::class)->startCheckout($owner, $invoice->id);
+            $this->fail('Unsafe payment configuration must refuse checkout.');
+        } catch (ValidationException|HttpException) {
+            $configuration = app(PayMongoClient::class)->configuration();
+            $this->assertFalse($configuration['checkout_enabled']);
+            $this->assertStringNotContainsString($key, json_encode($configuration, JSON_THROW_ON_ERROR));
+        }
+
+        Http::assertNothingSent();
+        $this->assertDatabaseCount('billing_payment_attempts', 0);
     }
 
     public function test_checkout_sends_one_server_quote_with_safe_transport_and_hides_the_stored_link(): void
@@ -290,7 +468,7 @@ class PayMongoBillingServiceTest extends TestCase
             app(PayMongoBillingService::class)->processSession('cs_existing', $attempt->reference);
             $this->fail('Unverified payment must not complete the webhook receipt.');
         } catch (RuntimeException $error) {
-            $this->assertSame('PayMongo test payment could not be verified for this checkout record.', $error->getMessage());
+            $this->assertSame('PayMongo payment could not be verified for this checkout record.', $error->getMessage());
         }
 
         $this->assertDatabaseHas('billing_invoices', ['id' => $invoice->id, 'status' => 'open']);
@@ -734,7 +912,7 @@ class PayMongoBillingServiceTest extends TestCase
             app(PayMongoBillingService::class)->startCheckout($owner, $invoice->id);
             $this->fail('Unsupported test methods must not create a hosted checkout.');
         } catch (ValidationException $error) {
-            $this->assertSame(['Configure an allowed test payment method.'], $error->errors()['payment']);
+            $this->assertSame(['Configure an allowed payment method.'], $error->errors()['payment']);
         }
 
         $this->assertFalse(app(PayMongoClient::class)->configuration()['checkout_enabled']);

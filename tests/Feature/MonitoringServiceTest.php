@@ -359,7 +359,7 @@ class MonitoringServiceTest extends TestCase
 
         $unconfigured = app(MonitoringService::class)->snapshot($user);
         $this->assertSame('disabled', $unconfigured['integrations'][1]['status']);
-        $this->assertStringContainsString('Configure a PayMongo test secret key', $unconfigured['integrations'][1]['summary']);
+        $this->assertStringContainsString('Configure a PayMongo secret key matching the selected mode', $unconfigured['integrations'][1]['summary']);
         config(['paymongo.secret_key' => 'sk_test_private_fixture']);
         $configured = app(MonitoringService::class)->snapshot($user);
         $this->assertSame('test', $configured['integrations'][1]['status']);

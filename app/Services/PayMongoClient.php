@@ -16,33 +16,51 @@ class PayMongoClient
             $enabled = $local && (bool) config('billing.simulations_enabled', false);
 
             return ['provider' => 'simulation', 'mode' => 'simulation', 'configured' => $enabled, 'checkout_enabled' => $enabled,
-                'reason' => $enabled ? null : 'Local billing simulation is disabled.', 'webhook_configured' => false,
+                'reason' => $enabled ? null : 'Local billing simulation is disabled.', 'webhook_configured' => false, 'payment_methods' => [],
                 'notice' => 'Simulated payments do not charge a card, wallet or bank account. Renewal invoices are paid individually.'];
         }
+        $mode = $this->mode();
         $reason = match (true) {
-            ! $local => 'PayMongo test checkout is available only in local development.',
-            ! config('paymongo.enabled', false) => 'PayMongo test checkout is disabled.',
-            config('paymongo.mode', 'test') !== 'test' => 'Only PayMongo test mode is supported.',
-            ! $this->hasTestKey() => 'Configure a PayMongo test secret key to enable checkout.',
-            $this->paymentMethods() === [] => 'Configure an allowed test payment method.',
+            $mode === null => 'Configure PayMongo mode as test or live.',
+            ! $this->modeAllowed() => $mode === 'live' ? 'PayMongo live checkout is available only in production.' : 'PayMongo test checkout is available only in local development.',
+            ! config('paymongo.enabled', false) => 'PayMongo checkout is disabled.',
+            ! $this->hasModeKey() => 'Configure a PayMongo secret key matching the selected mode.',
+            $mode === 'live' && ! $this->webhookConfigured() => 'Configure the live PayMongo webhook signing secret before accepting payments.',
+            $this->paymentMethods() === [] => 'Configure an allowed payment method.',
             $this->returnBaseUrl() === null => 'Configure a valid application URL for checkout returns.',
             default => null,
         };
 
-        return ['provider' => 'paymongo', 'mode' => 'test', 'configured' => $reason === null, 'checkout_enabled' => $reason === null,
-            'reason' => $reason, 'webhook_configured' => is_string(config('paymongo.webhook_secret')) && trim(config('paymongo.webhook_secret')) !== '',
-            'notice' => 'PayMongo test mode uses hosted checkout. No live payment is collected. Renewal invoices are paid individually; payments are confirmed on the server.'];
+        return ['provider' => 'paymongo', 'mode' => $mode ?? 'unavailable', 'configured' => $reason === null, 'checkout_enabled' => $reason === null,
+            'reason' => $reason, 'webhook_configured' => $this->webhookConfigured(), 'payment_methods' => $this->paymentMethods(),
+            'notice' => $mode === 'live'
+                ? 'PayMongo live mode collects real payments through hosted checkout. Renewal invoices are paid individually; payments are confirmed on the server.'
+                : 'PayMongo test mode uses hosted checkout. No live payment is collected. Renewal invoices are paid individually; payments are confirmed on the server.'];
     }
 
     public function assertEnabled(): void
     {
-        abort_unless(app()->environment(['local', 'testing']) && config('billing.payment_provider', 'simulation') === 'paymongo'
-            && config('paymongo.enabled', false) && config('paymongo.mode', 'test') === 'test', 404);
-        abort_if(str_starts_with((string) config('paymongo.secret_key', ''), 'sk_live_'), 404);
+        abort_unless($this->modeAllowed() && config('billing.payment_provider', 'simulation') === 'paymongo'
+            && config('paymongo.enabled', false), 404);
+        $key = (string) config('paymongo.secret_key', '');
+        abort_if(preg_match('/^sk_(test|live)_/', $key, $matches) === 1 && $matches[1] !== $this->mode(), 404);
         $configuration = $this->configuration();
         if (! $configuration['checkout_enabled']) {
             throw ValidationException::withMessages(['payment' => $configuration['reason']]);
         }
+    }
+
+    public function mode(): ?string
+    {
+        $mode = config('paymongo.mode', 'test');
+
+        return in_array($mode, ['test', 'live'], true) ? $mode : null;
+    }
+
+    public function modeAllowed(): bool
+    {
+        return ($this->mode() === 'test' && app()->environment(['local', 'testing']))
+            || ($this->mode() === 'live' && app()->isProduction());
     }
 
     public function createSession(array $payload, string $reference): array
@@ -64,7 +82,9 @@ class PayMongoClient
 
     public function paymentMethods(): array
     {
-        return array_values(array_intersect(['card', 'gcash'], (array) config('paymongo.payment_methods', ['card', 'gcash'])));
+        $allowed = $this->mode() === 'live' ? ['card', 'gcash', 'qrph'] : ['card', 'gcash'];
+
+        return array_values(array_intersect($allowed, (array) config('paymongo.payment_methods', ['card', 'gcash'])));
     }
 
     public function returnBaseUrl(): ?string
@@ -74,7 +94,7 @@ class PayMongoClient
         if (! is_array($parts) || ! isset($parts['scheme'], $parts['host']) || array_intersect(['user', 'pass', 'query', 'fragment'], array_keys($parts)) !== []) {
             return null;
         }
-        if ($parts['scheme'] !== 'https' && ! ($parts['scheme'] === 'http' && in_array($parts['host'], ['localhost', '127.0.0.1', '[::1]'], true))) {
+        if ($parts['scheme'] !== 'https' && ! ($this->mode() !== 'live' && $parts['scheme'] === 'http' && in_array($parts['host'], ['localhost', '127.0.0.1', '[::1]'], true))) {
             return null;
         }
 
@@ -86,9 +106,16 @@ class PayMongoClient
         return preg_match('/^cs_[A-Za-z0-9_]{1,90}$/D', $sessionId) === 1;
     }
 
-    private function hasTestKey(): bool
+    private function hasModeKey(): bool
     {
-        return preg_match('/^sk_test_[A-Za-z0-9_-]{1,200}$/D', (string) config('paymongo.secret_key', '')) === 1;
+        $mode = $this->mode();
+
+        return $mode !== null && preg_match('/^sk_'.$mode.'_[A-Za-z0-9_-]{1,200}$/D', (string) config('paymongo.secret_key', '')) === 1;
+    }
+
+    private function webhookConfigured(): bool
+    {
+        return is_string(config('paymongo.webhook_secret')) && trim(config('paymongo.webhook_secret')) !== '';
     }
 
     /** No provider error bodies or exception messages cross this boundary. */

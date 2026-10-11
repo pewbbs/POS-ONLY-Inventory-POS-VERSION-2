@@ -51,7 +51,65 @@ class SiteContentTest extends TestCase
         $response->assertOk()->assertViewIs('privacy')
             ->assertSeeText('Google sign-in')
             ->assertSeeText('Pablito Torres, trading as POSONLY')
-            ->assertSee('mailto:pewbbs@gmail.com', false);
+            ->assertSeeText('PayMongo hosted checkout')
+            ->assertSeeText('plan description, invoice amount in Philippine pesos, a payment reference, and checkout return URLs')
+            ->assertSeeText('does not collect or store your card number or security code')
+            ->assertSee('mailto:pewbbs@gmail.com', false)
+            ->assertSee('href="https://www.paymongo.com/en/privacy"', false);
+        Http::assertNothingSent();
+    }
+
+    public function test_live_public_pages_show_real_invoice_checkout_and_only_configured_methods(): void
+    {
+        Http::preventStrayRequests();
+        $this->app->detectEnvironment(fn (): string => 'production');
+        config(['billing.payment_provider' => 'paymongo', 'paymongo.enabled' => true, 'paymongo.mode' => 'live',
+            'paymongo.secret_key' => 'sk_live_public_copy_fixture', 'paymongo.webhook_secret' => 'public-copy-signing-fixture',
+            'paymongo.payment_methods' => ['qrph'], 'app.url' => 'https://posonly.example']);
+
+        $this->get('/')->assertOk()->assertSeeText('PLANS · HOSTED PAYMENTS')
+            ->assertSeeText('Live mode collects real payments')
+            ->assertDontSeeText('These are test records');
+        $this->get('/guide')->assertOk()->assertSeeText('Pay with PayMongo (live)')
+            ->assertSeeText('Configured methods: QR Ph')
+            ->assertSeeText('Open PayMongo checkout')
+            ->assertDontSeeText('4343434343434345')
+            ->assertDontSeeText('Configured methods: Card')
+            ->assertDontSee('sk_live_public_copy_fixture')
+            ->assertDontSee('public-copy-signing-fixture');
+
+        $this->assertDatabaseCount('billing_invoices', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_enabled_test_guide_keeps_test_payment_details_separate_from_live_checkout(): void
+    {
+        Http::preventStrayRequests();
+        config(['billing.payment_provider' => 'paymongo', 'paymongo.enabled' => true, 'paymongo.mode' => 'test',
+            'paymongo.secret_key' => 'sk_test_public_copy_fixture', 'paymongo.payment_methods' => ['card', 'gcash', 'qrph'],
+            'app.url' => 'http://localhost']);
+
+        $this->get('/')->assertOk()->assertSeeText('PLANS · TEST BILLING');
+        $this->get('/guide')->assertOk()->assertSeeText('Pay with PayMongo (test)')
+            ->assertSeeText('Open PayMongo test checkout')
+            ->assertSeeText('Configured methods: Card, GCash')
+            ->assertSeeText('4343434343434345')
+            ->assertDontSeeText('Configured methods: QR Ph')
+            ->assertDontSee('sk_test_public_copy_fixture');
+
+        Http::assertNothingSent();
+    }
+
+    public function test_production_does_not_offer_test_card_instructions_when_test_mode_is_disabled(): void
+    {
+        Http::preventStrayRequests();
+        $this->app->detectEnvironment(fn (): string => 'production');
+        config(['billing.payment_provider' => 'paymongo', 'paymongo.enabled' => true, 'paymongo.mode' => 'test',
+            'paymongo.secret_key' => 'sk_test_public_copy_fixture', 'app.url' => 'https://posonly.example']);
+
+        $this->get('/guide')->assertOk()->assertSeeText('If configuration is incomplete, checkout remains disabled.')
+            ->assertDontSeeText('4343434343434345');
+
         Http::assertNothingSent();
     }
 

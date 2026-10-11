@@ -75,7 +75,8 @@ class DeveloperPlatformService
                 $query->where('payment_provider', 'simulation')->orWhere('payment_method', 'simulation');
             })->sum('amount_cents') / 100,
             'paid_paymongo_test_total' => BillingInvoice::where('status', 'paid')->where('payment_provider', 'paymongo')->where('payment_mode', 'test')->sum('amount_cents') / 100,
-            'notice' => 'Recorded subscription invoices only. Simulation and PayMongo TEST payments are shown separately and are not live revenue or MRR. Renewals do not charge automatically.'];
+            'paid_paymongo_live_total' => BillingInvoice::where('status', 'paid')->where('payment_provider', 'paymongo')->where('payment_mode', 'live')->sum('amount_cents') / 100,
+            'notice' => 'Recorded subscription invoices only. Live PayMongo confirmations are separate from test and simulation records. These totals are not MRR, payout balances or accounting revenue. Renewals do not charge automatically.'];
     }
 
     public function detail(PlatformAdmin $actor, int $tenantId, array $filters): array

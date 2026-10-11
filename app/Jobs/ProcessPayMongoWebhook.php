@@ -31,17 +31,17 @@ class ProcessPayMongoWebhook implements ShouldQueue
             return;
         }
         try {
-            $payments->processSession($receipt->session_id, $receipt->reference);
+            $payments->processSession($receipt->session_id, $receipt->reference, $receipt->mode);
             $receipt->update(['status' => 'processed', 'processed_at' => now(), 'failure_summary' => null]);
         } catch (Throwable) {
-            throw new RuntimeException('PayMongo test payment verification is temporarily unavailable.');
+            throw new RuntimeException('PayMongo payment verification is temporarily unavailable.');
         }
     }
 
     public function failed(?Throwable $exception): void
     {
         PayMongoWebhookEvent::whereKey($this->eventId)->where('status', '!=', 'processed')->update([
-            'status' => 'failed', 'failure_summary' => 'PayMongo test payment verification could not finish. Recheck the invoice payment.',
+            'status' => 'failed', 'failure_summary' => 'PayMongo payment verification could not finish. Recheck the invoice payment.',
         ]);
     }
 }

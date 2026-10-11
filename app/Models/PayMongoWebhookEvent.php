@@ -13,7 +13,7 @@ class PayMongoWebhookEvent extends Model
 
     protected $table = 'paymongo_webhook_events';
 
-    protected $fillable = ['event_key', 'payload_digest', 'session_id', 'reference', 'status', 'processed_at', 'failure_summary', 'updated_at'];
+    protected $fillable = ['event_key', 'payload_digest', 'session_id', 'reference', 'mode', 'status', 'processed_at', 'failure_summary', 'updated_at'];
 
     protected $hidden = ['event_key', 'payload_digest', 'reference'];
 

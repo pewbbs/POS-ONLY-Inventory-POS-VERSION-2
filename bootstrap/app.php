@@ -26,7 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(DeveloperSession::class);
         $middleware->alias(['role' => RequireRole::class, 'tenant' => EnsureTenantAccess::class, 'audit' => AuditSuccessfulMutation::class, 'subscribed' => EnsureSubscriptionAccess::class, 'developer' => RequireDeveloper::class]);
         $middleware->redirectGuestsTo(fn (Request $request): string => $request->is('developer', 'developer/*', 'api/developer', 'api/developer/*') ? '/developer/login' : '/login');
-        $middleware->preventRequestForgery(except: ['webhooks/paymongo/test']);
+        $middleware->preventRequestForgery(except: ['webhooks/paymongo', 'webhooks/paymongo/test']);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->dontReportDuplicates();
@@ -59,7 +59,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 return response()->json(['message' => 'Developer administration is temporarily unavailable. Refresh and try again.'], 503)
                     ->header('Cache-Control', 'no-store, private');
             }
-            if ($request->is('api/billing', 'api/billing/*', 'webhooks/paymongo/test') && $exception instanceof HttpExceptionInterface) {
+            if ($request->is('api/billing', 'api/billing/*', 'webhooks/paymongo', 'webhooks/paymongo/*') && $exception instanceof HttpExceptionInterface) {
                 $status = $exception->getStatusCode();
                 $message = $status >= 500 ? 'Billing is temporarily unavailable. Refresh billing or recheck the invoice payment.'
                     : ($status === 404 ? 'Billing record not found.' : ($exception->getMessage() ?: Response::$statusTexts[$status] ?? 'Billing request could not be completed.'));
@@ -67,7 +67,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 return response()->json(['message' => $message], $status, $exception->getHeaders())
                     ->header('Cache-Control', 'no-store, private');
             }
-            if (($request->is('api/billing', 'api/billing/*', 'webhooks/paymongo/test'))
+            if (($request->is('api/billing', 'api/billing/*', 'webhooks/paymongo', 'webhooks/paymongo/*'))
                 && ! $exception instanceof HttpExceptionInterface
                 && ! $exception instanceof AuthenticationException
                 && ! $exception instanceof ValidationException) {
@@ -85,6 +85,6 @@ return Application::configure(basePath: dirname(__DIR__))
             return null;
         });
         $exceptions->shouldRenderJsonWhen(
-            fn (Request $request) => $request->is('api/*', 'webhooks/paymongo/test') || $request->expectsJson(),
+            fn (Request $request) => $request->is('api/*', 'webhooks/paymongo', 'webhooks/paymongo/*') || $request->expectsJson(),
         );
     })->create();
