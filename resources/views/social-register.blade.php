@@ -14,22 +14,18 @@
     <link rel="stylesheet" href="{{ asset('css/auth.css') }}?v={{ filemtime(public_path('css/auth.css')) }}">
 </head>
 <body>
+<a class="skip-link" href="#auth-main">Skip to the form</a>
 <aside class="auth-story">
-    <a class="auth-brand" href="{{ route('home') }}">POSONLY<span>.</span></a>
+    <a class="auth-brand" href="{{ route('home') }}" aria-label="POSONLY home">POSONLY<span aria-hidden="true">.</span></a>
     <div class="story-copy">
-        <p>INVENTORY / POINT OF SALE / POSSIBILITIES</p>
-        <h1>LESS ADMIN.<br><span>MORE SELLING.</span></h1>
-        <h2>Your next chapter starts here.</h2>
-        <p>A clear view of your business.<br>A simpler workday for your team.</p>
+        <h2>Inventory and point of sale</h2>
+        <p>Track stock and process sales in one workspace.</p>
     </div>
-    <div class="story-bottom"><span>YOUR BUSINESS, IN SYNC.</span></div>
-    <span class="story-star" aria-hidden="true">✳</span>
 </aside>
-<main class="auth-main">
-    <div class="auth-top"><a href="{{ route('register') }}">← Back to registration</a><a href="{{ route('guide') }}#social-sign-in">Need a hand?</a></div>
-    <section class="auth-card">
-        <p class="eyebrow">LET’S MAKE ROOM FOR MORE.</p>
-        <h2>One last thing.</h2>
+<main class="auth-main" id="auth-main" tabindex="-1">
+    <div class="auth-top"><a href="{{ route('register') }}">Back to registration</a><a href="{{ route('guide') }}#social-sign-in">Sign-in guide</a></div>
+    <section class="auth-card" aria-labelledby="auth-title">
+        <h1 id="auth-title">Finish your workspace</h1>
         <p class="auth-subtitle">Your {{ $providerLabel }} account is verified. Add your business details to create your workspace.</p>
         <div class="verified-account">
             <strong>Verified with {{ $providerLabel }}</strong>
@@ -50,7 +46,7 @@
         </form>
         <p class="auth-switch"><a href="{{ route('register') }}">Choose a different sign-in method</a></p>
     </section>
-    <footer>© {{ now()->year }} POSONLY <a href="{{ route('privacy') }}">Privacy policy</a><span>Keep your business moving.</span></footer>
+    <footer>© {{ now()->year }} POSONLY <a href="{{ route('privacy') }}">Privacy policy</a></footer>
 </main>
 </body>
 </html>

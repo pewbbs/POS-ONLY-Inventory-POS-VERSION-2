@@ -108,7 +108,15 @@ class PublicAccountNavigationTest extends TestCase
     {
         Http::preventStrayRequests();
 
-        $this->assertPrivate($this->get($path)->assertOk());
+        $response = $this->get($path)->assertOk();
+
+        $this->assertPrivate($response);
+        $document = new DOMDocument;
+        @$document->loadHTML('<?xml encoding="UTF-8">'.$response->getContent());
+        $xpath = new DOMXPath($document);
+        $this->assertCount(1, $xpath->query('//h1'));
+        $this->assertCount(1, $xpath->query('//main//h1'));
+        $this->assertNotSame('', trim($xpath->evaluate('string(//main//h1)')));
 
         $this->assertGuest('web');
         $this->assertGuest('developer');

@@ -24,7 +24,7 @@ class SocialOAuthClient
             $providers[$provider] = [
                 'label' => $label, 'available' => $available,
                 'message' => $available ? 'Continue with your '.$label.' account.' : ($provider === 'apple'
-                    ? 'Apple sign-in needs provider credentials and a registered HTTPS return URL.' : 'Google sign-in is not configured yet.'),
+                    ? 'Apple sign-in is unavailable. Use email to continue.' : 'Google sign-in is unavailable. Use email to continue.'),
             ];
         }
 

@@ -1,10 +1,10 @@
 @php
     $mode = $mode ?? 'login';
     $copy = [
-        'login' => ['title' => 'Welcome back', 'heading' => 'Good to have you back.', 'subtitle' => 'Log in to pick up right where you left off.', 'button' => 'Log in to POSONLY', 'route' => 'login'],
-        'register' => ['title' => 'Create your workspace', 'heading' => 'Your space. Your business.', 'subtitle' => 'Start your free trial with a clean slate.', 'button' => 'Create my workspace', 'route' => 'register'],
-        'forgot' => ['title' => 'Recover your account', 'heading' => 'Let’s get you back in.', 'subtitle' => 'Enter your work email and we’ll help you reset your password.', 'button' => 'Send reset link', 'route' => 'password.email'],
-        'reset' => ['title' => 'Reset your password', 'heading' => 'Make a fresh start.', 'subtitle' => 'Choose a new password to get back to your workspace.', 'button' => 'Save new password', 'route' => 'password.update'],
+        'login' => ['title' => 'Log in', 'heading' => 'Log in to POSONLY', 'subtitle' => 'Access your company workspace.', 'button' => 'Log in to POSONLY', 'route' => 'login'],
+        'register' => ['title' => 'Create your workspace', 'heading' => 'Create your workspace', 'subtitle' => 'Set up your business and administrator account.', 'button' => 'Create my workspace', 'route' => 'register'],
+        'forgot' => ['title' => 'Request a password reset', 'heading' => 'Request a password reset', 'subtitle' => 'Enter your account email address to receive a reset link.', 'button' => 'Send reset link', 'route' => 'password.email'],
+        'reset' => ['title' => 'Reset your password', 'heading' => 'Reset your password', 'subtitle' => 'Choose a new password for your account.', 'button' => 'Save new password', 'route' => 'password.update'],
     ][$mode];
     $newPassword = in_array($mode, ['register', 'reset'], true);
     $socialProviders = $socialProviders ?? [];
@@ -23,26 +23,22 @@
     <link rel="stylesheet" href="{{ asset('css/auth.css') }}?v={{ filemtime(public_path('css/auth.css')) }}">
 </head>
 <body>
+<a class="skip-link" href="#auth-main">Skip to the form</a>
 <aside class="auth-story">
-    <a class="auth-brand" href="{{ route('home') }}">POSONLY<span>.</span></a>
+    <a class="auth-brand" href="{{ route('home') }}" aria-label="POSONLY home">POSONLY<span aria-hidden="true">.</span></a>
     <div class="story-copy">
-        <p>INVENTORY / POINT OF SALE / POSSIBILITIES</p>
-        <h1>LESS ADMIN.<br><span>MORE SELLING.</span></h1>
-        <h2>Your next chapter starts here.</h2>
-        <p>A clear view of your business.<br>A simpler workday for your team.</p>
+        <h2>Inventory and point of sale</h2>
+        <p>Track stock and process sales in one workspace.</p>
     </div>
-    <div class="story-bottom"><span>YOUR BUSINESS, IN SYNC.</span></div>
-    <span class="story-star" aria-hidden="true">✳</span>
 </aside>
-<main class="auth-main">
-    <div class="auth-top"><a href="{{ route('home') }}">← Back to home</a><a href="{{ route('guide') }}">Need a hand?</a></div>
-    <section class="auth-card">
-        <p class="eyebrow">LET’S MAKE ROOM FOR MORE.</p>
-        <h2>{{ $copy['heading'] }}</h2>
+<main class="auth-main" id="auth-main" tabindex="-1">
+    <div class="auth-top"><a href="{{ route('home') }}">Back to home</a><a href="{{ route('guide') }}">User guide</a></div>
+    <section class="auth-card" aria-labelledby="auth-title">
+        <h1 id="auth-title">{{ $copy['heading'] }}</h1>
         <p class="auth-subtitle">{{ $copy['subtitle'] }}</p>
         @if($errors->any())
             <div class="form-error" role="alert">
-                <strong>Let’s fix a few things.</strong>
+                <strong>Check the details below.</strong>
                 <ul>@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul>
                 @if($mode === 'reset')<a class="recovery-link" href="{{ route('password.request') }}">Request a new reset link</a>@endif
             </div>
@@ -68,10 +64,9 @@
                 @endforeach
             </div>
             @foreach($socialProviders as $provider => $details)
-                @unless($details['available'])<p class="social-setup-note" id="{{ $provider }}-setup-note"><strong>{{ $details['label'] }}:</strong> {{ $details['message'] }}</p>@endunless
+                @unless($details['available'])<p class="social-setup-note" id="{{ $provider }}-setup-note">{{ $details['message'] }}</p>@endunless
             @endforeach
-            @if(collect($socialProviders)->contains(fn ($provider) => ! $provider['available']))<p class="social-setup-note"><a href="{{ route('guide') }}#social-sign-in">Google &amp; Apple sign-in guide</a></p>@endif
-            <div class="auth-divider"><span>or continue with email</span></div>
+            <div class="auth-divider"><span>or use email</span></div>
         @endif
         <form method="POST" action="{{ route($copy['route']) }}">
             @csrf
@@ -97,7 +92,7 @@
             @endif
             @if($newPassword)
                 <label for="password_confirmation">Confirm {{ $mode === 'reset' ? 'new password' : 'password' }}</label>
-                <input type="password" id="password_confirmation" name="password_confirmation" placeholder="One more time" autocomplete="new-password" required minlength="10" maxlength="255">
+                <input type="password" id="password_confirmation" name="password_confirmation" placeholder="Confirm your password" autocomplete="new-password" required minlength="10" maxlength="255">
             @endif
             @if($mode === 'register')<p class="signup-note">Start with a {{ config('billing.trial_days') }}-day free trial. Creating your workspace does not collect payment.</p>@endif
             @if($mode === 'forgot')<p class="recovery-note">Links expire in {{ config('auth.passwords.'.config('auth.defaults.passwords').'.expire') }} minutes. If your account is paused, ask your administrator for help.</p>@endif
@@ -105,16 +100,16 @@
             <button class="submit-button" type="submit">{{ $copy['button'] }}</button>
         </form>
         @if(in_array($mode, ['forgot', 'reset'], true))
-            <p class="auth-switch"><a href="{{ route('login') }}">← Back to log in</a></p>
+            <p class="auth-switch"><a href="{{ route('login') }}">Back to log in</a></p>
         @else
-            <p class="auth-switch">{{ $mode === 'register' ? 'Already have a workspace?' : 'New around here?' }} <a href="{{ route($mode === 'register' ? 'login' : 'register') }}">{{ $mode === 'register' ? 'Log in' : 'Create a workspace' }}</a></p>
+            <p class="auth-switch">{{ $mode === 'register' ? 'Already have a workspace?' : 'Need a workspace?' }} <a href="{{ route($mode === 'register' ? 'login' : 'register') }}">{{ $mode === 'register' ? 'Log in' : 'Create a workspace' }}</a></p>
             @if(config('stockroom.demo_enabled') && app()->environment(['local', 'testing']))
-                <div class="demo-divider"><span>or take a look around first</span></div>
+                <div class="demo-divider"><span>Try the sample store</span></div>
                 <form action="{{ route('demo') }}" method="POST">@csrf<button class="demo-button" type="submit">Explore the sample store</button></form>
             @endif
         @endif
     </section>
-    <footer>© {{ now()->year }} POSONLY <a href="{{ route('privacy') }}">Privacy policy</a><span>Keep your business moving.</span></footer>
+    <footer>© {{ now()->year }} POSONLY <a href="{{ route('privacy') }}">Privacy policy</a></footer>
 </main>
 <script>
     document.querySelector('.show-password')?.addEventListener('click', function () {

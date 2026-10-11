@@ -6,6 +6,8 @@ use App\Models\PlatformAdmin;
 use App\Models\SocialIdentity;
 use App\Models\User;
 use App\Services\SocialOAuthClient;
+use DOMDocument;
+use DOMXPath;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
@@ -160,7 +162,13 @@ class SocialAuthenticationTest extends TestCase
         $this->assertDatabaseCount('users', 0);
         $this->assertDatabaseCount('tenants', 0);
         $this->assertGuest('web');
-        $this->get('/auth/register/complete')->assertOk()->assertSee('owner@example.test')->assertSee('name="_token"', false);
+        $response = $this->get('/auth/register/complete')->assertOk()->assertSee('owner@example.test')->assertSee('name="_token"', false);
+        $document = new DOMDocument;
+        @$document->loadHTML('<?xml encoding="UTF-8">'.$response->getContent());
+        $xpath = new DOMXPath($document);
+        $this->assertCount(1, $xpath->query('//h1'));
+        $this->assertCount(1, $xpath->query('//main//h1'));
+        $this->assertNotSame('', trim($xpath->evaluate('string(//main//h1)')));
         Http::assertNothingSent();
     }
 
