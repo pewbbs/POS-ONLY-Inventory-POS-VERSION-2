@@ -13,7 +13,7 @@ Options -Indexes
 <IfModule mod_headers.c>
     Header unset Cache-Control
     Header always set Cache-Control "private, no-store, no-cache, must-revalidate"
-    Header always set Cache-Control "public, max-age=86400" "expr=%{REQUEST_STATUS} == 200 && %{REQUEST_URI} =~ m#^/(css|js|fonts|images)/[a-zA-Z0-9_./-]+\.(css|js|ttf|woff|woff2|png|jpg|jpeg|webp|svg)$# && -f %{REQUEST_FILENAME}"
+    Header always set Cache-Control "public, max-age=86400" "expr=%{REQUEST_STATUS} == 200 && %{REQUEST_URI} =~ m#^/(css|js|fonts|images)/[a-zA-Z0-9_./-]+\.(css|js|ttf|woff|woff2|png|jpg|jpeg|webp|svg)([?].*)?$# && -f %{REQUEST_FILENAME}"
     Header always set X-Content-Type-Options "nosniff"
     Header always set X-Frame-Options "SAMEORIGIN"
     Header always set Referrer-Policy "no-referrer"
