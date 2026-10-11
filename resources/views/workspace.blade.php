@@ -37,10 +37,10 @@
             <a href="/app/settings" data-section="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg><span>Settings</span></a>
         </nav>
         <div class="sidebar-bottom">
-            <a class="guide-link" href="{{ route('auth.social.connections') }}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span>Sign-in accounts</span><span>↗</span></a>
-            <a class="guide-link" href="/guide"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-3-2-7-2-10-1v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Zm0 0v15"/></svg><span>The staff handbook</span><span>↗</span></a>
+            <a class="guide-link" href="{{ route('auth.social.connections') }}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span>Sign-in accounts</span></a>
+            <a class="guide-link" href="/guide"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-3-2-7-2-10-1v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Zm0 0v15"/></svg><span>The staff handbook</span></a>
             <div class="workspace-status"><i></i><span id="connection-label">Connecting to workspace</span></div>
-            <form action="/logout" method="POST">@csrf<button type="submit" class="logout-button"><span id="sidebar-user">Your account</span><span>Sign out ↗</span></button></form>
+            <form action="/logout" method="POST">@csrf<button type="submit" class="logout-button"><span id="sidebar-user">Your account</span><span>Sign out</span></button></form>
         </div>
     </aside>
     <div class="app-shell">
@@ -56,7 +56,7 @@
         <main id="main-content" tabindex="-1">
             <div id="workspace-view" aria-live="polite"><div class="loading-state"><span class="loading-line"></span><h1>A little order. A lot of possibility.</h1><p>Opening your workspace…</p></div></div>
         </main>
-        <footer class="app-footer"><span>POSONLY / A clearer way to run your business.</span><a href="/guide">Need a hand? Read the guide ↗</a></footer>
+        <footer class="app-footer"><span>POSONLY / A clearer way to run your business.</span><a href="/guide">Need a hand? Read the guide</a></footer>
     </div>
     <dialog id="workspace-modal" aria-labelledby="modal-title"><div id="modal-content"></div></dialog>
     <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>

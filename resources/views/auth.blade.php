@@ -31,11 +31,11 @@
         <h2>Your next chapter starts here.</h2>
         <p>A clear view of your business.<br>A simpler workday for your team.</p>
     </div>
-    <div class="story-bottom"><span>YOUR BUSINESS, IN SYNC.</span><span>↗</span></div>
+    <div class="story-bottom"><span>YOUR BUSINESS, IN SYNC.</span></div>
     <span class="story-star" aria-hidden="true">✳</span>
 </aside>
 <main class="auth-main">
-    <div class="auth-top"><a href="{{ route('home') }}">← Back to home</a><a href="{{ route('guide') }}">Need a hand? ↗</a></div>
+    <div class="auth-top"><a href="{{ route('home') }}">← Back to home</a><a href="{{ route('guide') }}">Need a hand?</a></div>
     <section class="auth-card">
         <p class="eyebrow">LET’S MAKE ROOM FOR MORE.</p>
         <h2>{{ $copy['heading'] }}</h2>
@@ -44,7 +44,7 @@
             <div class="form-error" role="alert">
                 <strong>Let’s fix a few things.</strong>
                 <ul>@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul>
-                @if($mode === 'reset')<a class="recovery-link" href="{{ route('password.request') }}">Request a new reset link ↗</a>@endif
+                @if($mode === 'reset')<a class="recovery-link" href="{{ route('password.request') }}">Request a new reset link</a>@endif
             </div>
         @endif
         @if($socialError ?? null)<div class="form-error" role="alert">{{ $socialError }}</div>@endif
@@ -70,7 +70,7 @@
             @foreach($socialProviders as $provider => $details)
                 @unless($details['available'])<p class="social-setup-note" id="{{ $provider }}-setup-note"><strong>{{ $details['label'] }}:</strong> {{ $details['message'] }}</p>@endunless
             @endforeach
-            @if(collect($socialProviders)->contains(fn ($provider) => ! $provider['available']))<p class="social-setup-note"><a href="{{ route('guide') }}#social-sign-in">Google &amp; Apple sign-in guide ↗</a></p>@endif
+            @if(collect($socialProviders)->contains(fn ($provider) => ! $provider['available']))<p class="social-setup-note"><a href="{{ route('guide') }}#social-sign-in">Google &amp; Apple sign-in guide</a></p>@endif
             <div class="auth-divider"><span>or continue with email</span></div>
         @endif
         <form method="POST" action="{{ route($copy['route']) }}">
@@ -102,15 +102,15 @@
             @if($mode === 'register')<p class="signup-note">Start with a {{ config('billing.trial_days') }}-day free trial. Creating your workspace does not collect payment.</p>@endif
             @if($mode === 'forgot')<p class="recovery-note">Links expire in {{ config('auth.passwords.'.config('auth.defaults.passwords').'.expire') }} minutes. If your account is paused, ask your administrator for help.</p>@endif
             @if($mode === 'reset')<p class="recovery-note">Saving your new password signs you out on other devices. Sign in again to continue.</p>@endif
-            <button class="submit-button" type="submit">{{ $copy['button'] }}<span>↗</span></button>
+            <button class="submit-button" type="submit">{{ $copy['button'] }}</button>
         </form>
         @if(in_array($mode, ['forgot', 'reset'], true))
             <p class="auth-switch"><a href="{{ route('login') }}">← Back to log in</a></p>
         @else
-            <p class="auth-switch">{{ $mode === 'register' ? 'Already have a workspace?' : 'New around here?' }} <a href="{{ route($mode === 'register' ? 'login' : 'register') }}">{{ $mode === 'register' ? 'Log in ↗' : 'Create a workspace ↗' }}</a></p>
+            <p class="auth-switch">{{ $mode === 'register' ? 'Already have a workspace?' : 'New around here?' }} <a href="{{ route($mode === 'register' ? 'login' : 'register') }}">{{ $mode === 'register' ? 'Log in' : 'Create a workspace' }}</a></p>
             @if(config('stockroom.demo_enabled') && app()->environment(['local', 'testing']))
                 <div class="demo-divider"><span>or take a look around first</span></div>
-                <form action="{{ route('demo') }}" method="POST">@csrf<button class="demo-button" type="submit">Explore the sample store <span>↗</span></button></form>
+                <form action="{{ route('demo') }}" method="POST">@csrf<button class="demo-button" type="submit">Explore the sample store</button></form>
             @endif
         @endif
     </section>

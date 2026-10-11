@@ -21,7 +21,7 @@
         <div class="story-bottom"><span>DEVELOPER ACCESS</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></svg></div>
     </aside>
     <main class="auth-main">
-        <div class="auth-top"><a href="{{ route('home') }}">← Back to website</a><a href="{{ route('login') }}">Company sign in ↗</a></div>
+        <div class="auth-top"><a href="{{ route('home') }}">← Back to website</a><a href="{{ route('login') }}">Company sign in</a></div>
         <section class="auth-card">
             <p class="eyebrow">POSONLY / DEVELOPER PORTAL</p>
             <h2>{{ $isSetup ? 'Make it your own.' : 'The whole picture.' }}</h2>
@@ -36,7 +36,7 @@
                 <label for="developer-password">{{ $isSetup ? 'New password' : 'Password' }}</label>
                 <div class="password-input"><input type="password" name="password" id="developer-password" autocomplete="{{ $isSetup ? 'new-password' : 'current-password' }}" placeholder="{{ $isSetup ? 'At least 12 characters' : 'Your private password' }}" required maxlength="255" @if($isSetup) minlength="12" @endif><button type="button" id="developer-show-password" aria-pressed="false" aria-label="Show password">Show</button></div>
                 @if($isSetup)<label for="developer-confirm-password">Confirm password</label><input type="password" name="password_confirmation" id="developer-confirm-password" autocomplete="new-password" minlength="12" maxlength="255" required><p class="auth-note">This setup link activates your developer account. Keep your password private.</p>@endif
-                <button class="submit-button" type="submit">{{ $isSetup ? 'Activate developer access' : 'Sign in to developer portal' }}<span>↗</span></button>
+                <button class="submit-button" type="submit">{{ $isSetup ? 'Activate developer access' : 'Sign in to developer portal' }}</button>
             </form>
             <p class="auth-separation">Developer access is separate from company sign in. Your existing company session stays available.</p>
         </section>

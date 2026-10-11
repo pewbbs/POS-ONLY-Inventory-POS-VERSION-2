@@ -22,11 +22,11 @@
         <h2>Your next chapter starts here.</h2>
         <p>A clear view of your business.<br>A simpler workday for your team.</p>
     </div>
-    <div class="story-bottom"><span>YOUR BUSINESS, IN SYNC.</span><span>↗</span></div>
+    <div class="story-bottom"><span>YOUR BUSINESS, IN SYNC.</span></div>
     <span class="story-star" aria-hidden="true">✳</span>
 </aside>
 <main class="auth-main">
-    <div class="auth-top"><a href="{{ route('register') }}">← Back to registration</a><a href="{{ route('guide') }}#social-sign-in">Need a hand? ↗</a></div>
+    <div class="auth-top"><a href="{{ route('register') }}">← Back to registration</a><a href="{{ route('guide') }}#social-sign-in">Need a hand?</a></div>
     <section class="auth-card">
         <p class="eyebrow">LET’S MAKE ROOM FOR MORE.</p>
         <h2>One last thing.</h2>
@@ -46,9 +46,9 @@
             <input id="name" name="name" value="{{ old('name', $identity['name'] ?? '') }}" placeholder="First and last name" autocomplete="name" required maxlength="100">
             <p class="social-register-note">We’ll create your <strong>Main store</strong> using <strong>PHP · Philippine peso</strong>. Review your tax rate and receipt details in <strong>Settings</strong> after signing in.</p>
             <p class="signup-note">No payment is taken when you create your workspace.</p>
-            <button class="submit-button" type="submit">Create my workspace<span>↗</span></button>
+            <button class="submit-button" type="submit">Create my workspace</button>
         </form>
-        <p class="auth-switch"><a href="{{ route('register') }}">Choose a different sign-in method ↗</a></p>
+        <p class="auth-switch"><a href="{{ route('register') }}">Choose a different sign-in method</a></p>
     </section>
     <footer>© {{ now()->year }} POSONLY <a href="{{ route('privacy') }}">Privacy policy</a><span>Keep your business moving.</span></footer>
 </main>

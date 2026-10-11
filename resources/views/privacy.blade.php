@@ -19,7 +19,7 @@
         <a class="guide-brand" href="{{ route('home') }}" aria-label="POSONLY home">POSONLY</a>
         <span class="header-label">YOUR INFORMATION / YOUR BUSINESS</span>
         <nav aria-label="Privacy policy actions">
-            <a class="workspace-link" href="{{ $companySignedIn ? $workspaceUrl : route('home', [], false) }}">{{ $companySignedIn ? 'Back to workspace' : 'Back to home' }} <span aria-hidden="true">↗</span></a>
+            <a class="workspace-link" href="{{ $companySignedIn ? $workspaceUrl : route('home', [], false) }}">{{ $companySignedIn ? 'Back to workspace' : 'Back to home' }}</a>
         </nav>
     </header>
 
@@ -158,8 +158,8 @@
     <footer class="guide-footer">
         <a class="guide-brand" href="{{ route('home') }}">POSONLY</a>
         <p>Your business. In sync.</p>
-        @if($companySignedIn)<p><a href="{{ $workspaceUrl }}">Back to workspace ↗</a></p>@endif
-        <p><a href="{{ $developerPortalUrl }}">Developer portal ↗</a></p>
+        @if($companySignedIn)<p><a href="{{ $workspaceUrl }}">Back to workspace</a></p>@endif
+        <p><a href="{{ $developerPortalUrl }}">Developer portal</a></p>
         <p>@include('partials.public-social-links', ['officialProfiles' => (array) config('seo.official_profiles', [])])</p>
         <span>© {{ now()->year }} POSONLY</span>
     </footer>

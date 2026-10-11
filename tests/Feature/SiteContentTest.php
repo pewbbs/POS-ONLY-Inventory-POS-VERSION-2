@@ -156,9 +156,9 @@ class SiteContentTest extends TestCase
         $links = $xpath->query('//footer//*[@aria-label="POSONLY official social profiles"]/a');
         $this->assertCount(2, $links);
         $this->assertSame('https://www.facebook.com/posonlyph/', $links->item(0)->getAttribute('href'));
-        $this->assertSame('Facebook ↗', trim($links->item(0)->textContent));
+        $this->assertSame('Facebook', trim($links->item(0)->textContent));
         $this->assertSame('https://www.linkedin.com/company/posonly/', $links->item(1)->getAttribute('href'));
-        $this->assertSame('LinkedIn ↗', trim($links->item(1)->textContent));
+        $this->assertSame('LinkedIn', trim($links->item(1)->textContent));
         foreach ($links as $link) {
             $this->assertSame('_blank', $link->getAttribute('target'));
             $this->assertSame('noopener noreferrer', $link->getAttribute('rel'));

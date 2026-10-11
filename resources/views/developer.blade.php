@@ -27,10 +27,10 @@
             <a href="{{ route('developer', ['section' => 'activity']) }}" data-view="activity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6zM9 7h6M9 11h6M9 15h3M3 7h3M3 17h3"/></svg><span>Platform activity</span></a>
         </nav>
         <div class="sidebar-bottom">
-            <a class="sidebar-link" href="{{ route('home') }}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18"/></svg><span>View public website</span><span>↗</span></a>
-            <a class="sidebar-link" href="/app"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h18M4 10v10h16V10M2 10l3-7h14l3 7M8 20v-6h5v6"/></svg><span>Company workspace</span><span>↗</span></a>
+            <a class="sidebar-link" href="{{ route('home') }}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18"/></svg><span>View public website</span></a>
+            <a class="sidebar-link" href="/app"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h18M4 10v10h16V10M2 10l3-7h14l3 7M8 20v-6h5v6"/></svg><span>Company workspace</span></a>
             <div class="connection-status" id="developer-connection"><i></i><span>Connecting to platform</span></div>
-            <form action="{{ route('developer.logout') }}" method="POST">@csrf<button type="submit" class="logout-button"><span id="developer-name">Developer account</span><span>Sign out ↗</span></button></form>
+            <form action="{{ route('developer.logout') }}" method="POST">@csrf<button type="submit" class="logout-button"><span id="developer-name">Developer account</span><span>Sign out</span></button></form>
         </div>
     </aside>
     <div class="app-shell">

@@ -19,11 +19,11 @@
         <h2>Your business. Your way in.</h2>
         <p>A clear view of your business.<br>A simpler workday for your team.</p>
     </div>
-    <div class="story-bottom"><span>YOUR BUSINESS, IN SYNC.</span><span>↗</span></div>
+    <div class="story-bottom"><span>YOUR BUSINESS, IN SYNC.</span></div>
     <span class="story-star" aria-hidden="true">✳</span>
 </aside>
 <main class="auth-main">
-    <div class="auth-top"><a href="{{ route('workspace', ['section' => 'overview']) }}">← Back to workspace</a><a href="{{ route('guide') }}#social-sign-in">Need a hand? ↗</a></div>
+    <div class="auth-top"><a href="{{ route('workspace', ['section' => 'overview']) }}">← Back to workspace</a><a href="{{ route('guide') }}#social-sign-in">Need a hand?</a></div>
     <section class="auth-card">
         <p class="eyebrow">YOUR ACCOUNT / SIGN-IN OPTIONS</p>
         <h2>A familiar way in.</h2>
@@ -53,7 +53,7 @@
             @endforeach
         </div>
         <p class="social-register-note">Only connect accounts you own. The connected provider opens this same workspace with your current role. It does not grant developer access.</p>
-        <p class="auth-switch"><a href="{{ route('workspace', ['section' => 'overview']) }}">Back to my workspace ↗</a></p>
+        <p class="auth-switch"><a href="{{ route('workspace', ['section' => 'overview']) }}">Back to my workspace</a></p>
     </section>
     <footer>© {{ now()->year }} POSONLY <span>Keep your business moving.</span></footer>
 </main>
