@@ -68,6 +68,8 @@ class ProductController extends Controller
             }
             if (($data['quantity'] ?? 0) > 0) {
                 $inventory->changeStock($actor, $product, $locationId, $data['quantity'], 'opening', 'Opening stock');
+            } else {
+                CheckLowStock::dispatch($tenantId)->afterCommit();
             }
             app(CommerceService::class)->syncInventoryForTenant($tenantId);
 

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\CheckLowStock;
 use App\Models\Customer;
 use App\Models\Location;
 use App\Models\Product;
@@ -45,6 +46,7 @@ class CustomerController extends Controller
             Product::where('tenant_id', $request->user()->tenant_id)->each(function (Product $product) use ($location): void {
                 Stock::create(['tenant_id' => $location->tenant_id, 'product_id' => $product->id, 'location_id' => $location->id, 'quantity' => 0]);
             });
+            CheckLowStock::dispatch($location->tenant_id)->afterCommit();
 
             return $location;
         });

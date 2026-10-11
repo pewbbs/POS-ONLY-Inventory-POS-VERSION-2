@@ -89,6 +89,15 @@
         analyticsFilters: null,
         analyticsDraft: null,
         analyticsRequest: 0,
+        receiptHistory: null,
+        receiptHistoryLoading: false,
+        receiptHistoryError: null,
+        receiptHistoryRequest: 0,
+        receiptHistoryPage: 1,
+        receiptHistorySearch: '',
+        receiptHistoryDraft: '',
+        receiptHistoryContext: null,
+        saleRecordRequest: 0,
         reportView: new URLSearchParams(location.search).get('view') === 'financial' ? 'financial' : 'analytics',
         financial: null,
         financialLoading: false,
@@ -107,6 +116,7 @@
         monitoringCooldownUntil: 0,
     };
     let activeRefresh = null;
+    const returnFormSales = new WeakMap();
 
     const paths = {
         channels: '<rect x="2" y="3" width="7" height="6" rx="1"/><rect x="15" y="3" width="7" height="6" rx="1"/><rect x="8.5" y="15" width="7" height="6" rx="1"/><path d="M5.5 9v3H19V9M12 12v3"/>',
@@ -991,7 +1001,9 @@
     function renderPurchases() {
         const orders = (state.data.purchase_orders || []).filter(order => number(order.location_id) === state.location);
         const pending = orders.filter(orderMayReceive);
-        return `${heading('Ready for the next rush.', sections.purchases[1], button('Suppliers', 'suppliers', 'subtle', 'people') + button('Create order', 'create-order', 'primary', 'plus'), 'PURCHASING')}<div class="stats-grid purchase-stats">${metric('Pending deliveries', pending.length, 'Approved stock still outstanding', 'stock')}${metric('Drafts to approve', orders.filter(order => order.status === 'draft').length, 'Stock is added after delivery', 'receipt')}${metric('Received orders', orders.filter(order => order.status === 'received').length, 'All ordered units received', 'check')}</div><section class="panel reorder-nudge"><div><h2>Keep replenishment simple.</h2><p>Set a supplier and target stock level. Generate purchase drafts when products reach their reorder level.</p></div>${button('Replenishment rules', 'reorder-rules', '', 'refresh')}</section>${orders.length ? `<div class="cards-grid">${orders.map(order => {
+        const totals = state.data.purchase_order_stats_by_location?.[state.location] || {pending_deliveries: pending.length, drafts: orders.filter(order => order.status === 'draft').length, received: orders.filter(order => order.status === 'received').length};
+        const historyNote = state.data.purchase_order_history?.truncated ? `<div class="sample-banner">${icon('info')}<span>All outstanding orders remain available. Completed and canceled history shows the latest ${count(state.data.purchase_order_history.processed_limit)} orders across locations; totals include the full history.</span></div>` : '';
+        return `${heading('Ready for the next rush.', sections.purchases[1], button('Suppliers', 'suppliers', 'subtle', 'people') + button('Create order', 'create-order', 'primary', 'plus'), 'PURCHASING')}<div class="stats-grid purchase-stats">${metric('Pending deliveries', count(totals.pending_deliveries), 'Approved stock still outstanding', 'stock')}${metric('Drafts to approve', count(totals.drafts), 'Stock is added after delivery', 'receipt')}${metric('Received orders', count(totals.received), 'All ordered units received', 'check')}</div>${historyNote}<section class="panel reorder-nudge"><div><h2>Keep replenishment simple.</h2><p>Set a supplier and target stock level. Generate purchase drafts when products reach their reorder level.</p></div>${button('Replenishment rules', 'reorder-rules', '', 'refresh')}</section>${orders.length ? `<div class="cards-grid">${orders.map(order => {
             const supplier = (state.data.suppliers || []).find(item => number(item.id) === number(order.supplier_id));
             const units = (order.items || []).reduce((total, item) => total + number(item.quantity), 0);
             const received = (order.items || []).reduce((total, item) => total + number(item.received_quantity ?? (order.status === 'received' ? item.quantity : 0)), 0);
@@ -1072,6 +1084,7 @@
     }
 
     function selectReportView(tab, push = true) {
+        state.saleRecordRequest += 1;
         state.reportView = tab === 'financial' && canManage() ? 'financial' : 'analytics';
         const url = `/app/reports${state.reportView === 'financial' ? '?view=financial' : ''}`;
         if (push && `${location.pathname}${location.search}` !== url) { history.pushState({}, '', url); }
@@ -1095,6 +1108,7 @@
 
     function invalidateReports() {
         state.analyticsRequest += 1; state.analytics = null; state.analyticsLoading = false; state.analyticsError = null;
+        state.receiptHistoryRequest += 1; state.receiptHistory = null; state.receiptHistoryLoading = false; state.receiptHistoryError = null;
         state.financialRequest += 1; state.financial = null; state.financialLoading = false; state.financialError = null;
     }
 
@@ -1120,6 +1134,57 @@
             state.analyticsError = failure.message;
         } finally {
             if (request === state.analyticsRequest) { state.analyticsLoading = false; if (state.section === 'reports' && state.reportView === 'analytics') { renderSection(true); } }
+        }
+        if (request === state.analyticsRequest && !state.analyticsError) { await loadReceiptHistory(state.receiptHistoryPage); }
+    }
+
+    async function loadReceiptHistory(page = 1) {
+        if (!state.analytics) { return; }
+        const filters = state.analytics.filters;
+        const context = analyticsQuery(filters, false);
+        if (context !== state.receiptHistoryContext) {
+            state.receiptHistoryContext = context; state.receiptHistory = null; page = 1;
+        }
+        const params = new URLSearchParams(context);
+        params.set('page', String(page));
+        if (state.receiptHistorySearch) { params.set('receipt', state.receiptHistorySearch); }
+        const request = ++state.receiptHistoryRequest;
+        state.receiptHistoryPage = page; state.receiptHistoryLoading = true; state.receiptHistoryError = null;
+        if (state.section === 'reports' && state.reportView === 'analytics') { renderSection(true); }
+        try {
+            const result = await api(`/sales?${params}`);
+            if (request !== state.receiptHistoryRequest) { return; }
+            state.receiptHistory = result;
+        } catch (failure) {
+            if (request === state.receiptHistoryRequest) { state.receiptHistoryError = failure.message; }
+        } finally {
+            if (request === state.receiptHistoryRequest) {
+                state.receiptHistoryLoading = false;
+                if (state.section === 'reports' && state.reportView === 'analytics') { renderSection(true); }
+            }
+        }
+    }
+
+    function receiptHistoryPanel() {
+        const result = state.receiptHistory;
+        const meta = result?.meta;
+        const loading = state.receiptHistoryLoading || state.analyticsLoading;
+        const error = state.receiptHistoryError ? `<div class="form-error" role="alert">${escape(state.receiptHistoryError)}${result ? ' The last loaded receipts remain below.' : ''} ${button('Retry receipts', 'receipt-history-retry', 'small')}</div>` : '';
+        const search = `<form data-form="receipt-search" class="receipt-search-form">${field('Full receipt number', 'receipt', state.receiptHistoryDraft, 'search', 'maxlength="100"', 'Exact number, within the applied date, location and source filters.')}<div><button type="submit" class="button primary small" ${loading ? 'disabled' : ''}>Search</button>${button('Clear search', 'receipt-history-clear', 'small subtle', '', loading ? 'disabled' : '')}</div></form>`;
+        const rows = result?.data || [];
+        const body = rows.length ? recentSalesTable(rows, true) : loading ? '<div class="quiet-state" role="status"><span class="loading-line" style="display:block;margin:15px auto"></span><h3>Loading receipts…</h3></div>' : empty('No matching receipts.', 'Check the full receipt number or apply a wider date range, location or source. All time includes older sales.', '', true, 'receipt');
+        const paging = meta ? `<div class="receipt-history-paging"><p role="status">${loading ? 'Updating receipts…' : `${count(meta.from || 0)}–${count(meta.to || 0)} of ${count(meta.total)} matching receipts · Page ${count(meta.current_page)} of ${count(meta.last_page)}`}</p><div>${button('Previous', 'receipt-history-page', 'small subtle', '', `data-page="${number(meta.current_page) - 1}" ${loading || number(meta.current_page) <= 1 ? 'disabled' : ''}`)}${button('Next', 'receipt-history-page', 'small subtle', '', `data-page="${number(meta.current_page) + 1}" ${loading || number(meta.current_page) >= number(meta.last_page) ? 'disabled' : ''}`)}</div></div>` : '';
+        return `<section class="panel recent-sales analytics-receipts"><div class="panel-header"><div><h2>Matching receipts & returns</h2><p>Browse every matching receipt, including older sales.</p></div></div>${search}${error}${body}${paging}</section>`;
+    }
+
+    async function openSaleRecord(id, returning = false) {
+        const request = ++state.saleRecordRequest;
+        try {
+            const sale = await api(`/sales/${number(id)}`);
+            if (request !== state.saleRecordRequest) { return; }
+            if (returning) { returnModal(sale); } else { receiptModal(sale); }
+        } catch (failure) {
+            if (request === state.saleRecordRequest) { toast(failure.message, true); }
         }
     }
 
@@ -1175,13 +1240,6 @@
     function analyticsScopeLabel(filters) {
         const period = filters.from && filters.to ? `${reportDayLabel(filters.from)}–${reportDayLabel(filters.to)}` : 'All time';
         return `${period} · ${filters.location_id ? locationName(filters.location_id) : 'All locations'} · ${reportSources[filters.source] || 'All sources'}${filters.scope === 'own_sales' ? ' · Your sales only' : ''}`;
-    }
-
-    function reportReceipts(filters) {
-        return (state.data.sales || []).filter(sale => {
-            const day = manilaDay(sale.created_at);
-            return (!filters.location_id || number(sale.location_id) === number(filters.location_id)) && (filters.source === 'all' || (filters.source === 'channel' ? isChannelSale(sale) : !isChannelSale(sale))) && (!filters.from || day >= filters.from) && (!filters.to || day <= filters.to);
-        });
     }
 
     function peakHours(analytics) {
@@ -1273,13 +1331,12 @@
     function renderSalesAnalytics() {
         const analytics = state.analytics;
         const top = heading('Your business, a little clearer.', 'Sales patterns from every matching receipt, at a glance.', button('Refresh report', 'analytics-refresh', 'subtle', 'refresh', state.analyticsLoading ? 'disabled' : '') + (isAdmin() ? button('Export sales CSV', 'export-sales', '', 'download', !analytics || state.analyticsLoading ? 'disabled' : '') : ''), 'REPORTS & INSIGHTS', 'analytics-heading');
-        const error = (state.analyticsError ? `<div class="form-error" role="alert">${escape(state.analyticsError)}${analytics ? ' Your last successful report is still shown below.' : ''} ${button('Retry last report', 'analytics-retry', 'small')}</div>` : '') + (state.analyticsReceiptError ? `<div class="form-error" role="alert">Receipt history could not refresh. ${escape(state.analyticsReceiptError)} Use Refresh report to update both receipts and analytics.</div>` : '');
+        const error = (state.analyticsError ? `<div class="form-error" role="alert">${escape(state.analyticsError)}${analytics ? ' Your last successful report is still shown below.' : ''} ${button('Retry last report', 'analytics-retry', 'small')}</div>` : '') + (state.analyticsReceiptError ? `<div class="form-error" role="alert">Workspace summaries could not refresh. ${escape(state.analyticsReceiptError)} Use Refresh report to try again.</div>` : '');
         const filters = reportFilterForm();
         if (!analytics) { return reportPage(top, `${filters}${error}${state.analyticsLoading ? '<div class="panel quiet-state" role="status"><span class="loading-line" style="display:block;margin:15px auto"></span><h3>Reading your sales patterns…</h3><p>Totals and rankings include every matching receipt.</p></div>' : empty('Your report is ready to build.', 'Apply filters or retry to load your recorded sales.', button('Load report', 'analytics-refresh', 'primary'), false, 'trend')}`); }
         const summary = analytics.summary;
-        const receipts = reportReceipts(analytics.filters);
         const stats = `${metric('Net recorded sales', money(summary.net_total), 'After discounts and returns, including tax', 'dollar')}${metric('Recorded transactions', count(summary.transactions), `${money(summary.average_basket)} average net basket`, 'receipt')}${metric('Net units sold', count(summary.net_units), `${count(summary.units_sold)} sold · ${count(summary.units_returned)} returned`, 'cart')}${metric('Recorded returns', money(summary.returned_total), `${count(summary.returned_transactions)} ${number(summary.returned_transactions) === 1 ? 'receipt' : 'receipts'} with returns`, 'return')}`;
-        return reportPage(top, `${filters}${error}<div class="analytics-scope"><span>${escape(analyticsScopeLabel(analytics.filters))}</span><small>${state.analyticsLoading ? 'Refreshing selected filters… Last results remain visible.' : `Full matching history · updated ${time(analytics.generated_at)}`}</small></div>${number(summary.simulated_transactions) ? `<div class="sample-banner analytics-simulation">${icon('info')}<span>Includes ${count(summary.simulated_transactions)} simulated channel ${number(summary.simulated_transactions) === 1 ? 'sale' : 'sales'}. No real payment was processed for these imports.</span></div>` : ''}<div class="stats-grid analytics-stats">${stats}</div><div class="analytics-definition">Traffic includes returned receipts. Net figures reflect all recorded returns for sales made during this range, including returns recorded later.</div><div class="analytics-panels"><section class="panel"><div class="panel-header"><div><h2>Busy hours</h2><p>Transaction counts across all 24 hours · Manila time.</p></div>${icon('clock')}</div>${peakHours(analytics)}</section><section class="panel analytics-totals"><div class="panel-header"><div><h2>From sale to net total</h2><p>Recorded amounts for this selection.</p></div>${icon('receipt')}</div><div><div class="receipt-line"><span>Original sales total</span><strong>${money(summary.gross_total)}</strong></div><div class="receipt-line"><span>Recorded returns</span><strong>−${money(summary.returned_total)}</strong></div><div class="receipt-line total"><span>Net recorded sales</span><strong>${money(summary.net_total)}</strong></div></div><p>Original totals include discounts and tax. These records do not represent payment settlement or profit.</p></section></div><section class="panel analytics-bestsellers"><div class="panel-header"><div><h2>Your best sellers, by SKU</h2><p>Ranked by ${analytics.filters.rank_by === 'net_total' ? 'net recorded sales' : 'net units sold'}.</p></div><span class="period-label">${number(analytics.ranked_product_count ?? analytics.best_sellers.length) > 10 ? `Top 10 of ${count(analytics.ranked_product_count)} SKUs` : `${count(analytics.ranked_product_count ?? analytics.best_sellers.length)} ${number(analytics.ranked_product_count ?? analytics.best_sellers.length) === 1 ? 'SKU' : 'SKUs'} ranked`}</span></div>${bestSellersTable(analytics)}</section><section class="panel recent-sales analytics-receipts"><div class="panel-header"><div><h2>Matching receipts & returns</h2><p>${limitedHistory() ? `Filtered from the latest ${count(state.data.history_limit)} permitted receipts. Analytics above uses the full matching history.` : 'Loaded receipts matching these report filters.'}</p></div></div>${receipts.length ? recentSalesTable(receipts, true) : empty('No matching receipts in the loaded history.', limitedHistory() ? 'Older matches can still contribute to analytics. Administrators can export the full matching history.' : 'Choose another report period, location or source.', '', true, 'receipt')}</section>${help(canManage() ? 'Choose a receipt to view it or record a return. Original prices, discounts and taxes determine refunds. Process any real refund through the original provider separately.' : 'Reports include only sales made by your account. Ask a manager to process returns.', 'reports')}`);
+        return reportPage(top, `${filters}${error}<div class="analytics-scope"><span>${escape(analyticsScopeLabel(analytics.filters))}</span><small>${state.analyticsLoading ? 'Refreshing selected filters… Last results remain visible.' : `Full matching history · updated ${time(analytics.generated_at)}`}</small></div>${number(summary.simulated_transactions) ? `<div class="sample-banner analytics-simulation">${icon('info')}<span>Includes ${count(summary.simulated_transactions)} simulated channel ${number(summary.simulated_transactions) === 1 ? 'sale' : 'sales'}. No real payment was processed for these imports.</span></div>` : ''}<div class="stats-grid analytics-stats">${stats}</div><div class="analytics-definition">Traffic includes returned receipts. Net figures reflect all recorded returns for sales made during this range, including returns recorded later.</div><div class="analytics-panels"><section class="panel"><div class="panel-header"><div><h2>Busy hours</h2><p>Transaction counts across all 24 hours · Manila time.</p></div>${icon('clock')}</div>${peakHours(analytics)}</section><section class="panel analytics-totals"><div class="panel-header"><div><h2>From sale to net total</h2><p>Recorded amounts for this selection.</p></div>${icon('receipt')}</div><div><div class="receipt-line"><span>Original sales total</span><strong>${money(summary.gross_total)}</strong></div><div class="receipt-line"><span>Recorded returns</span><strong>−${money(summary.returned_total)}</strong></div><div class="receipt-line total"><span>Net recorded sales</span><strong>${money(summary.net_total)}</strong></div></div><p>Original totals include discounts and tax. These records do not represent payment settlement or profit.</p></section></div><section class="panel analytics-bestsellers"><div class="panel-header"><div><h2>Your best sellers, by SKU</h2><p>Ranked by ${analytics.filters.rank_by === 'net_total' ? 'net recorded sales' : 'net units sold'}.</p></div><span class="period-label">${number(analytics.ranked_product_count ?? analytics.best_sellers.length) > 10 ? `Top 10 of ${count(analytics.ranked_product_count)} SKUs` : `${count(analytics.ranked_product_count ?? analytics.best_sellers.length)} ${number(analytics.ranked_product_count ?? analytics.best_sellers.length) === 1 ? 'SKU' : 'SKUs'} ranked`}</span></div>${bestSellersTable(analytics)}</section>${receiptHistoryPanel()}${help(canManage() ? 'Choose a receipt to view it or record a return. Original prices, discounts and taxes determine refunds. Process any real refund through the original provider separately.' : 'Reports include only sales made by your account. Ask a manager to process returns.', 'reports')}`);
     }
 
     async function loadMonitoring(silent = false) {
@@ -1507,6 +1564,7 @@
     function navigate(section) {
         if (state.busy && state.section === 'settings') { toast('Please wait for your settings to finish saving.'); return; }
         if (!Object.hasOwn(sections, section)) { return; }
+        state.saleRecordRequest += 1;
         state.section = section;
         state.search = '';
         state.category = 'All products';
@@ -1532,6 +1590,7 @@
     }
 
     function openModal(title, subtitle, body) {
+        state.saleRecordRequest += 1;
         modalContent.innerHTML = `<div class="modal-header"><div><h2 id="modal-title">${title}</h2><p>${subtitle}</p></div><button class="icon-button" data-action="close-modal" aria-label="Close dialog">${icon('close')}</button></div><div class="modal-body">${body}</div>`;
         modalContent.querySelectorAll('[data-action="print-receipt"]').forEach(control => { control.disabled = state.receiptPrinting; });
         modal.classList.toggle('variant-dialog', Boolean(modalContent.querySelector('.variant-builder, .variant-family-list')));
@@ -1729,9 +1788,10 @@
     }
 
     function createOrderModal() {
+        if (state.pendingRecordAction) { recordRecoveryModal(); return; }
         if (!products().length) { toast('Add a product before creating a purchase order.', true); productForm(); return; }
         if (!(state.data.suppliers || []).length) { supplierModal(true); return; }
-        openModal('Keep the shelves ready.', 'Create an order. Receive it when the delivery arrives.', modalForm('purchase', `<div class="form-grid">${selectField('Supplier', 'supplier_id', (state.data.suppliers || []).map(supplier => `<option value="${supplier.id}">${escape(supplier.name)}</option>`).join(''))}${selectField('Delivery location', 'location_id', locationOptions())}${selectField('Order status', 'status', '<option value="ordered">Approved · awaiting delivery</option><option value="draft">Draft · approve later</option>', 'Drafts cannot be received until approved.', true)}</div><div class="purchase-line-header"><span>Product</span><span>Qty.</span><span>Cost (₱)</span><span></span></div><div id="purchase-lines">${orderLine()}</div>${button('Add another product', 'add-order-line', 'small subtle', 'plus')}<div class="purchase-total"><span>Order total</span><b id="purchase-total">${money(0)}</b></div>`, 'Create purchase order'));
+        openModal('Keep the shelves ready.', 'Create an order. Receive it when the delivery arrives.', modalForm('purchase', `<div class="form-grid">${selectField('Supplier', 'supplier_id', (state.data.suppliers || []).map(supplier => `<option value="${supplier.id}">${escape(supplier.name)}</option>`).join(''))}${selectField('Delivery location', 'location_id', locationOptions())}${selectField('Order status', 'status', '<option value="ordered">Approved · awaiting delivery</option><option value="draft">Draft · approve later</option>', 'Drafts cannot be received until approved.', true)}</div><div class="purchase-line-header"><span>Product</span><span>Qty.</span><span>Cost (₱)</span><span></span></div><div id="purchase-lines">${orderLine()}</div>${button('Add another product', 'add-order-line', 'small subtle', 'plus')}<div class="purchase-total"><span>Order total</span><b id="purchase-total">${money(0)}</b></div>`, 'Create purchase order', `data-key="${uuid()}"`));
     }
 
     function supplierModal(needsSupplier = false) {
@@ -1776,10 +1836,11 @@
         const items = (sale.items || []).filter(item => remainingSaleQuantity(item) > 0);
         if (!items.length) { toast('All items in this sale have already been returned.'); return; }
         openModal('Return what came back.', escape(sale.number || `Sale #${sale.id}`), modalForm('return', `<div class="modal-tip">Choose the quantity your customer is returning. Original prices, discounts and tax determine the refund; stock returns to ${escape(locationName(sale.location_id))}.</div><div class="line-quantity-list">${items.map(item => `<div class="line-quantity-row"><div><strong>${escape(item.name)}</strong><small>${remainingSaleQuantity(item)} available to return · ${number(item.returned_quantity)} already returned</small></div><label><span>Return qty.</span><input type="number" name="quantity_${number(item.product_id)}" data-product-id="${number(item.product_id)}" min="0" max="${remainingSaleQuantity(item)}" step="1" value="0" required aria-label="Return quantity for ${escape(item.name)}"></label></div>`).join('')}</div>${button('Return all remaining', 'fill-remaining', 'small subtle')}<div class="form-grid" style="margin-top:18px">${field('Reason for return', 'reason', '', 'text', 'required maxlength="200"', 'Saved with this return record.', true)}</div><div class="payment-summary"><span>Refund to record</span><b id="return-preview">${money(0)}</b></div><div class="modal-tip" style="margin-top:18px">Refund the customer through the original payment provider separately. POSONLY records the return and restores stock; no payment is refunded by this app.</div>`, 'Record return', `data-id="${sale.id}" data-key="${uuid()}"`));
+        returnFormSales.set(modal.querySelector('form[data-form="return"]'), sale);
     }
 
     function updateReturnPreview(form) {
-        const sale = state.data.sales.find(sale => number(sale.id) === number(form.dataset.id));
+        const sale = returnFormSales.get(form);
         const total = [...form.querySelectorAll('[data-product-id]')].reduce((sum, input) => {
             const item = sale?.items.find(item => number(item.product_id) === number(input.dataset.productId));
             const quantity = Math.trunc(Math.min(number(input.max), Math.max(0, number(input.value))));
@@ -1795,7 +1856,7 @@
         state.recordActionRestored = true;
         try {
             const pending = JSON.parse(sessionStorage.getItem(recordStorageKey()) || 'null');
-            if (pending && /^(?:\/(?:sales|purchase-orders)\/\d+\/(?:return|receive)|\/cash-sessions\/(?:open|\d+\/(?:adjustments|close))|\/commerce\/(?:channels(?:\/\d+(?:\/(?:pause|resume|sync|orders))?)?|orders\/\d+\/(?:import|cancel))|\/product-families(?:\/\d+\/variants)?)$/.test(pending.path) && (pending.payload?.idempotency_key || pending.recovery_key) && ['POST', 'PATCH'].includes(pending.method || 'POST')) { state.pendingRecordAction = {...pending, uncertain: true}; if (pending.path.startsWith('/commerce/')) { state.commerceChannel = number(pending.context?.channel_id) || null; if (!state.cart.length && pending.context?.location_id) { state.location = number(pending.context.location_id); } } }
+            if (pending && /^(?:\/purchase-orders|\/(?:sales|purchase-orders)\/\d+\/(?:return|receive)|\/cash-sessions\/(?:open|\d+\/(?:adjustments|close))|\/commerce\/(?:channels(?:\/\d+(?:\/(?:pause|resume|sync|orders))?)?|orders\/\d+\/(?:import|cancel))|\/product-families(?:\/\d+\/variants)?)$/.test(pending.path) && (pending.payload?.idempotency_key || pending.recovery_key) && ['POST', 'PATCH'].includes(pending.method || 'POST')) { state.pendingRecordAction = {...pending, uncertain: true}; if (pending.path.startsWith('/commerce/')) { state.commerceChannel = number(pending.context?.channel_id) || null; if (!state.cart.length && pending.context?.location_id) { state.location = number(pending.context.location_id); } } }
         } catch { /* Retain in-memory recovery when storage is unavailable. */ }
     }
 
@@ -1827,7 +1888,7 @@
             const result = await api(protectedRequest.path, protectedRequest.method || 'POST', protectedRequest.payload);
             clearRecordAction(); state.activity = null; invalidateReports(); modal.close();
             try { await refresh(); } catch { toast('Saved. Refresh to load the latest stock.', true); }
-            if (!protectedRequest.quiet) { toast(path.startsWith('/cash-sessions/') ? `${label} recorded.` : `${label} recorded. Stock and history are updated.`); }
+            if (!protectedRequest.quiet) { toast(protectedRequest.path === '/purchase-orders' ? 'Purchase order created. Stock is added when you record delivery.' : protectedRequest.path.startsWith('/cash-sessions/') ? `${protectedRequest.label} recorded.` : `${protectedRequest.label} recorded. Stock and history are updated.`); }
             return result;
         } catch (failure) {
             const terminalAction = protectedRequest.path.match(/^\/commerce\/orders\/(\d+)\/(import|cancel)$/);
@@ -2181,11 +2242,11 @@
                 document.querySelectorAll('.payment-tabs button').forEach(button => { const selected = button.dataset.method === state.payment; button.classList.toggle('active', selected); button.setAttribute('aria-pressed', String(selected)); });
                 document.getElementById('payment-details').innerHTML = paymentDetails();
                 break;
-            case 'receipt': { const sale = state.data.sales.find(sale => number(sale.id) === number(id)); if (sale) { receiptModal(sale); } break; }
+            case 'receipt': await openSaleRecord(id); break;
             case 'preview-receipt-print': previewReceiptPrint(); break;
             case 'back-to-receipt': if (state.lastSale) { receiptModal(state.lastSale); } break;
             case 'print-receipt': printReceipt(); break;
-            case 'return': { const sale = state.data.sales.find(sale => number(sale.id) === number(id)); if (sale) { returnModal(sale); } break; }
+            case 'return': await openSaleRecord(id, true); break;
             case 'create-order': createOrderModal(); break;
             case 'suppliers': supplierModal(); break;
             case 'add-order-line': document.getElementById('purchase-lines').insertAdjacentHTML('beforeend', orderLine()); break;
@@ -2204,6 +2265,9 @@
             case 'export-invoices': await exportInvoices(control); break;
             case 'export-financial': await exportFinancial(control); break;
             case 'analytics-refresh': await refreshReports(); break;
+            case 'receipt-history-page': await loadReceiptHistory(number(control.dataset.page)); break;
+            case 'receipt-history-retry': await loadReceiptHistory(state.receiptHistoryPage); break;
+            case 'receipt-history-clear': state.receiptHistorySearch = ''; state.receiptHistoryDraft = ''; state.receiptHistory = null; await loadReceiptHistory(1); break;
             case 'analytics-retry': await loadAnalytics(state.analyticsFilters || initializeReportFilters()); break;
             case 'analytics-reset': state.analyticsDraft = null; await loadAnalytics(initializeReportFilters()); break;
             case 'financial-refresh': await loadFinancial(state.financialFilters || initializeFinancialFilters()); break;
@@ -2226,6 +2290,7 @@
 
     document.addEventListener('input', event => {
         const target = event.target;
+        if (target.closest('[data-form="receipt-search"]') && target.name === 'receipt') { state.receiptHistoryDraft = target.value; }
         const settingsForm = target.closest('[data-form="settings"]');
         if (settingsForm && target.name !== 'receipt_logo' && target.name !== 'remove_receipt_logo') { updateReceiptSettingsPreview(settingsForm, target); }
         if (target.closest('[data-form="variant-family"]') && target.name === 'name') {
@@ -2345,6 +2410,7 @@
                 state.financialDraft = draft;
                 await loadFinancial(draft); break;
             }
+            case 'receipt-search': state.receiptHistorySearch = (data.receipt || '').trim(); state.receiptHistoryDraft = state.receiptHistorySearch; state.receiptHistory = null; await loadReceiptHistory(1); break;
             case 'analytics-filters': {
                 const draft = {...initializeReportFilters(), preset: data.report_preset, location_id: data.report_location || '', source: data.report_source, rank_by: data.report_rank};
                 Object.assign(draft, draft.preset === 'custom' ? {from: data.report_from || '', to: data.report_to || ''} : reportPresetDates(draft.preset));
@@ -2421,9 +2487,10 @@
             case 'billing-payment-recover': await paymongoInvoiceAction(number(form.dataset.id), 'recover', {session_id: data.session_id}, form); break;
             case 'simulate-payment': await saveBilling(form, `/billing/invoices/${form.dataset.id}/simulate-payment`, {idempotency_key: form.dataset.key}); break;
             case 'purchase': {
+                if (state.pendingRecordAction) { recordRecoveryModal(); break; }
                 const items = [...form.querySelectorAll('.purchase-line')].map(line => ({product_id: number(line.querySelector('[name="product_id"]').value), quantity: number(line.querySelector('[name="quantity"]').value), cost: number(line.querySelector('[name="cost"]').value)}));
                 if (new Set(items.map(item => item.product_id)).size !== items.length) { const error = form.querySelector('.form-error'); error.textContent = 'Each product can appear once. Combine its quantity in one line.'; error.hidden = false; return; }
-                await save(form, '/purchase-orders', 'POST', {supplier_id: number(data.supplier_id), location_id: number(data.location_id), status: data.status || 'ordered', items}, data.status === 'draft' ? 'Draft created. Approve it before receiving delivery.' : 'Purchase order created. Receive it after delivery.');
+                await saveRecordAction(form, '/purchase-orders', {supplier_id: number(data.supplier_id), location_id: number(data.location_id), status: data.status || 'ordered', items, idempotency_key: form.dataset.key}, 'Purchase order creation');
                 break;
             }
             case 'supplier': result = await save(form, '/suppliers', 'POST', data, 'Supplier added.'); if (result && form.dataset.next === 'purchase') { createOrderModal(); } break;
@@ -2493,8 +2560,9 @@
     });
     document.getElementById('sidebar-shade').addEventListener('click', closeSidebar);
     modal.addEventListener('click', event => { if (event.target === modal && !state.busy) { modal.close(); } });
+    modal.addEventListener('close', () => { state.saleRecordRequest += 1; });
     modal.addEventListener('cancel', event => { if (state.busy) { event.preventDefault(); } });
-    window.addEventListener('popstate', () => { const section = location.pathname.split('/')[2] || 'overview'; state.section = Object.hasOwn(sections, section) ? section : 'overview'; if (state.section === 'reports') { state.reportView = new URLSearchParams(location.search).get('view') === 'financial' && canManage() ? 'financial' : 'analytics'; } state.search = ''; state.category = 'All products'; renderSection(); });
+    window.addEventListener('popstate', () => { state.saleRecordRequest += 1; const section = location.pathname.split('/')[2] || 'overview'; state.section = Object.hasOwn(sections, section) ? section : 'overview'; if (state.section === 'reports') { state.reportView = new URLSearchParams(location.search).get('view') === 'financial' && canManage() ? 'financial' : 'analytics'; } state.search = ''; state.category = 'All products'; renderSection(); });
     window.addEventListener('offline', () => { document.getElementById('connection-label').textContent = 'Offline · reconnect before saving'; document.querySelector('.workspace-status').classList.add('offline'); toast('You are offline. Reconnect before completing a sale.', true); });
     window.addEventListener('online', () => { document.getElementById('connection-label').textContent = 'Reconnected · refresh to sync'; document.querySelector('.workspace-status').classList.remove('offline'); });
 

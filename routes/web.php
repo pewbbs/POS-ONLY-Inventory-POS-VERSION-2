@@ -62,6 +62,7 @@ Route::prefix('api')->middleware(['auth:web', 'auth.session', 'tenant', 'throttl
     Route::get('/bootstrap', [WorkspaceController::class, 'bootstrap']);
     Route::get('/settings/receipt-logo', [SettingsController::class, 'logo'])->name('settings.receipt-logo');
     Route::get('/reports/analytics', [SalesAnalyticsController::class, 'show']);
+    Route::get('/sales', [SaleController::class, 'index']);
     Route::get('/sales/{sale}', [SaleController::class, 'show']);
     Route::get('/cash-sessions', [CashSessionController::class, 'index']);
     Route::post('/cash-sessions/open', [CashSessionController::class, 'open'])->middleware('subscribed');

@@ -42,6 +42,7 @@ class PurchaseOrderController extends Controller
     {
         $data = $request->validate([
             'supplier_id' => ['required', 'integer'], 'location_id' => ['required', 'integer'],
+            'idempotency_key' => ['sometimes', 'required', 'string', 'min:8', 'max:100'],
             'status' => ['sometimes', 'required', Rule::in(['draft', 'ordered'])],
             'items' => ['required', 'array', 'min:1', 'max:100'],
             'items.*.product_id' => ['required', 'integer', 'distinct'],

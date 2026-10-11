@@ -85,9 +85,18 @@ class PublicAccountNavigationTest extends TestCase
         $response = $this->get('/')->assertOk();
 
         $this->assertContains('/login', $this->linkPaths($response, '//header//a'));
+        $this->assertContains('/login', $this->linkPaths($response, '//header//nav//a'));
         $this->assertContains('/register', $this->linkPaths($response, '//header//a'));
         $this->assertContains('/register', $this->linkPaths($response, '//div[contains(concat(" ", normalize-space(@class), " "), " hero-buttons ")]/a'));
         $this->assertNotContains('/app/overview', $this->linkPaths($response, '//header//a'));
+        $document = new DOMDocument;
+        @$document->loadHTML('<?xml encoding="UTF-8">'.$response->getContent());
+        $xpath = new DOMXPath($document);
+        $menuButton = $xpath->query('//header//button[@aria-controls]')->item(0);
+        $this->assertNotNull($menuButton);
+        $this->assertCount(1, $xpath->query('//header/nav[@id="'.$menuButton->getAttribute('aria-controls').'"]'));
+        $this->assertSame('false', $menuButton->getAttribute('aria-expanded'));
+        $this->assertSame('Open navigation', $menuButton->getAttribute('aria-label'));
         Http::assertNothingSent();
     }
 

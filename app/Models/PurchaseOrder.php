@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['tenant_id', 'supplier_id', 'location_id', 'user_id', 'number', 'status', 'items', 'total_cents', 'received_at', 'source', 'reorder_rule_id', 'approved_at', 'cancelled_at'])]
+#[Fillable(['tenant_id', 'supplier_id', 'location_id', 'user_id', 'number', 'status', 'items', 'total_cents', 'received_at', 'source', 'reorder_rule_id', 'approved_at', 'cancelled_at', 'creation_key', 'creation_hash'])]
 class PurchaseOrder extends Model
 {
     use HasFactory;

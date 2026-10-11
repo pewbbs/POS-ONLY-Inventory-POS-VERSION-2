@@ -5,12 +5,37 @@ namespace App\Http\Controllers;
 use App\Http\Resources\SaleResource;
 use App\Models\Sale;
 use App\Services\InventoryService;
+use App\Services\SalesAnalyticsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class SaleController extends Controller
 {
+    public function index(Request $request, SalesAnalyticsService $analytics): JsonResponse
+    {
+        $filters = $analytics->validatedFilters($request);
+        $data = Validator::make($request->query(), [
+            'receipt' => ['nullable', 'string', 'max:100'],
+            'page' => ['sometimes', 'integer', 'min:1', 'max:100000'],
+        ])->validate();
+        $receipt = isset($data['receipt']) ? trim($data['receipt']) : null;
+        $receipt = $receipt === '' ? null : $receipt;
+        $user = $request->user();
+        $query = $analytics->salesQuery($user, $filters);
+        if ($receipt !== null) {
+            $query->whereRaw('LOWER(number) = ?', [Str::lower($receipt)]);
+        }
+        $sales = $query->with(['cashier', 'returns.actor:id,name', 'channel:id,name', 'channelOrder:id,sale_id,external_reference'])
+            ->orderByDesc('created_at')->orderByDesc('id')->paginate(25, ['*'], 'page', (int) ($data['page'] ?? 1))->withQueryString();
+
+        return SaleResource::collection($sales)->additional([
+            'filters' => $filters + ['receipt' => $receipt, 'timezone' => 'Asia/Manila', 'scope' => $user->role === 'cashier' ? 'own_sales' : 'business'],
+        ])->response()->header('Cache-Control', 'no-store, private');
+    }
+
     public function show(Request $request, int $sale): JsonResponse
     {
         $user = $request->user();

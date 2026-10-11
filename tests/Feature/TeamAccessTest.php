@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -129,5 +130,29 @@ class TeamAccessTest extends TestCase
         User::whereKey($team['admin']->id)->update(['role' => 'cashier']);
         $this->actingAs($team['admin'])->patchJson('/api/team/'.$team['member']->id, ['role' => 'admin'])->assertForbidden();
         $this->assertDatabaseHas('users', ['id' => $team['member']->id, 'role' => 'cashier']);
+    }
+
+    #[TestWith(['role', 'manager'])]
+    #[TestWith(['role', 'cashier'])]
+    #[TestWith(['is_active', false])]
+    public function test_access_changed_during_a_request_is_rechecked_before_creating_a_member_as_403(string $field, mixed $value): void
+    {
+        $this->freezeTime();
+        $team = $this->team();
+        $subscription = Subscription::factory()->create(['tenant_id' => $team['tenant']->id]);
+        $subscriptionBefore = $subscription->fresh()->getAttributes();
+        User::whereKey($team['admin']->id)->update([$field => $value]);
+
+        $this->actingAs($team['admin'])->postJson('/api/team', [
+            'name' => 'New cashier', 'email' => 'new-cashier@example.test',
+            'password' => 'initial-password-123', 'role' => 'cashier',
+        ])->assertForbidden()->assertJsonPath('message', 'Administrator access is required.');
+
+        $this->assertDatabaseCount('users', 2);
+        $this->assertDatabaseMissing('users', ['email' => 'new-cashier@example.test']);
+        $this->assertSame($subscriptionBefore, $subscription->fresh()->getAttributes());
+        $this->assertDatabaseCount('subscriptions', 1);
+        $this->assertDatabaseCount('billing_invoices', 0);
+        $this->assertDatabaseCount('activity_logs', 0);
     }
 }

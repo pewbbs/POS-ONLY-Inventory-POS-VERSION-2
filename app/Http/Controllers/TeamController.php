@@ -25,6 +25,8 @@ class TeamController extends Controller
         ]);
         $user = DB::transaction(function () use ($request, $data): User {
             $tenant = Tenant::whereKey($request->user()->tenant_id)->lockForUpdate()->firstOrFail();
+            $actor = User::where('tenant_id', $tenant->id)->lockForUpdate()->findOrFail($request->user()->id);
+            abort_unless($actor->role === 'admin' && $actor->is_active, 403, 'Administrator access is required.');
             app(BillingService::class)->assertCapacity($tenant, 'team_members');
 
             return User::create(['tenant_id' => $tenant->id] + $data);

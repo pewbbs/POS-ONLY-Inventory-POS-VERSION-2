@@ -75,6 +75,34 @@ class WorkspaceController extends Controller
             'available_units' => $products->sum(fn (Product $product): int => $product->stocks->sum(fn ($stock): int => $stock->quantity - $stock->reserved_quantity)),
             'low_stock_count' => $low->count(), 'inventory_value' => $isCashier ? null : $inventoryValue / 100,
         ];
+        $purchaseOrders = collect();
+        $purchaseOrderHistory = null;
+        $purchaseOrderStatsByLocation = [];
+        if (! $isCashier) {
+            $purchaseQuery = PurchaseOrder::where('tenant_id', $tenantId);
+            $processedIds = (clone $purchaseQuery)->whereIn('status', ['received', 'cancelled'])->latest('id')->limit(200)->pluck('id');
+            $purchaseOrders = (clone $purchaseQuery)->where(function ($query) use ($processedIds): void {
+                $query->whereIn('status', ['draft', 'ordered', 'partially_received'])->orWhereIn('id', $processedIds);
+            })->with('receipts.receiver:id,name')->latest('id')->get();
+            $purchaseAggregates = (clone $purchaseQuery)->select('location_id')->selectRaw(
+                "SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) AS drafts,
+                 SUM(CASE WHEN status IN ('ordered', 'partially_received') THEN 1 ELSE 0 END) AS pending_deliveries,
+                 SUM(CASE WHEN status = 'received' THEN 1 ELSE 0 END) AS received,
+                 SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled",
+            )->groupBy('location_id')->get();
+            foreach ($purchaseAggregates as $aggregate) {
+                $purchaseOrderStatsByLocation[$aggregate->location_id] = [
+                    'drafts' => (int) $aggregate->drafts, 'pending_deliveries' => (int) $aggregate->pending_deliveries,
+                    'received' => (int) $aggregate->received, 'cancelled' => (int) $aggregate->cancelled,
+                ];
+            }
+            $outstandingCount = $purchaseAggregates->sum(fn ($aggregate): int => (int) $aggregate->drafts + (int) $aggregate->pending_deliveries);
+            $processedCount = $purchaseAggregates->sum(fn ($aggregate): int => (int) $aggregate->received + (int) $aggregate->cancelled);
+            $purchaseOrderHistory = [
+                'processed_limit' => 200, 'total' => (clone $purchaseQuery)->count(), 'outstanding_count' => $outstandingCount,
+                'processed_count' => $processedCount, 'loaded_processed_count' => $processedIds->count(), 'truncated' => $processedCount > $processedIds->count(),
+            ];
+        }
 
         return response()->json([
             'user' => $user->only(['id', 'name', 'email', 'role', 'is_active']),
@@ -90,7 +118,8 @@ class WorkspaceController extends Controller
             'suppliers' => $isCashier ? [] : Supplier::where('tenant_id', $tenantId)->orderBy('id')->get(['id', 'name', 'email', 'phone']),
             'sales' => SaleResource::collection($sales)->resolve($request),
             'movements' => $isCashier ? [] : StockMovement::where('tenant_id', $tenantId)->latest('id')->limit(200)->get(['id', 'product_id', 'location_id', 'quantity', 'type', 'reason', 'reference', 'created_at']),
-            'purchase_orders' => $isCashier ? [] : PurchaseOrder::where('tenant_id', $tenantId)->with('receipts.receiver:id,name')->latest('id')->limit(200)->get()->map(fn (PurchaseOrder $order): array => PurchaseOrderController::serialize($order)),
+            'purchase_orders' => $purchaseOrders->map(fn (PurchaseOrder $order): array => PurchaseOrderController::serialize($order)),
+            'purchase_order_history' => $purchaseOrderHistory, 'purchase_order_stats_by_location' => (object) $purchaseOrderStatsByLocation,
             'team' => $user->role !== 'admin' ? [] : User::where('tenant_id', $tenantId)->orderBy('id')->get(['id', 'name', 'email', 'role', 'is_active']),
             'settings' => $user->tenant->publicSettings(), 'stats' => $stats, 'stats_by_location' => (object) $statsByLocation,
             'history_limit' => 500, 'history_total' => (clone $historyQuery)->count(),

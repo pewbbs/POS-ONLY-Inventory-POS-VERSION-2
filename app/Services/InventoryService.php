@@ -148,16 +148,38 @@ class InventoryService
 
     public function purchaseOrder(User $user, array $data): PurchaseOrder
     {
-        return DB::transaction(function () use ($user, $data): PurchaseOrder {
-            Tenant::whereKey($user->tenant_id)->lockForUpdate()->firstOrFail();
+        $status = $data['status'] ?? 'ordered';
+        if (! in_array($status, ['draft', 'ordered'], true)) {
+            throw ValidationException::withMessages(['status' => 'Choose a draft or ordered purchase order.']);
+        }
+        $key = $data['idempotency_key'] ?? null;
+        $requestedItems = array_map(fn (array $item): array => [
+            'product_id' => (int) $item['product_id'], 'quantity' => (int) $item['quantity'],
+            'cost_cents' => isset($item['cost']) ? self::cents($item['cost']) : null,
+        ], $data['items']);
+        usort($requestedItems, fn (array $left, array $right): int => $left['product_id'] <=> $right['product_id']);
+        $requestHash = $key === null ? null : hash('sha256', json_encode([
+            'actor_id' => $user->id, 'supplier_id' => (int) $data['supplier_id'], 'location_id' => (int) $data['location_id'],
+            'status' => $status, 'reorder_rule_id' => isset($data['reorder_rule_id']) ? (int) $data['reorder_rule_id'] : null, 'items' => $requestedItems,
+        ], JSON_THROW_ON_ERROR));
+
+        return DB::transaction(function () use ($user, $data, $status, $key, $requestHash): PurchaseOrder {
+            $tenant = Tenant::whereKey($user->tenant_id)->lockForUpdate()->firstOrFail();
             $user = User::where('tenant_id', $user->tenant_id)->lockForUpdate()->findOrFail($user->id);
             abort_unless($user->is_active && in_array($user->role, ['admin', 'manager'], true), 403, 'Manager or administrator access is required for purchasing.');
+            if (! app(BillingService::class)->summary($tenant)['can_write']) {
+                abort(response()->json(['message' => 'Subscription access has ended. Review Billing to continue purchasing.', 'code' => 'subscription_required'], 423));
+            }
+            if ($key !== null) {
+                $existing = PurchaseOrder::where('tenant_id', $user->tenant_id)->where('creation_key', $key)->first();
+                if ($existing) {
+                    abort_unless(hash_equals($existing->creation_hash, $requestHash), 409, 'This purchase key was already used for different order details or by another team member.');
+
+                    return $existing->load('receipts.receiver:id,name');
+                }
+            }
             Supplier::where('tenant_id', $user->tenant_id)->findOrFail($data['supplier_id']);
             Location::where('tenant_id', $user->tenant_id)->findOrFail($data['location_id']);
-            $status = $data['status'] ?? 'ordered';
-            if (! in_array($status, ['draft', 'ordered'], true)) {
-                throw ValidationException::withMessages(['status' => 'Choose a draft or ordered purchase order.']);
-            }
             $items = [];
             $total = 0;
             foreach ($data['items'] as $item) {
@@ -171,6 +193,7 @@ class InventoryService
                 'tenant_id' => $user->tenant_id, 'user_id' => $user->id, 'supplier_id' => $data['supplier_id'],
                 'location_id' => $data['location_id'], 'items' => $items, 'total_cents' => $total,
                 'number' => 'PO-'.now()->format('ymd').'-'.Str::upper(Str::random(8)), 'status' => $status,
+                'creation_key' => $key, 'creation_hash' => $requestHash,
                 'source' => isset($data['reorder_rule_id']) ? 'replenishment' : 'manual',
                 'reorder_rule_id' => $data['reorder_rule_id'] ?? null, 'approved_at' => $status === 'ordered' ? now() : null,
             ]);
