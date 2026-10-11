@@ -1,0 +1,61 @@
+name: stockroom
+
+x-application: &application
+  image: stockroom:production
+  build:
+    context: ..
+    target: production
+  env_file:
+    - ${STOCKROOM_ENV_FILE:-../.env.production}
+  environment:
+    MYSQL_ROOT_PASSWORD: ""
+  volumes:
+    - app-storage:/var/www/html/storage
+  depends_on:
+    database:
+      condition: service_healthy
+  restart: unless-stopped
+  stop_grace_period: 75s
+
+services:
+  web:
+    <<: *application
+    ports:
+      - "127.0.0.1:${STOCKROOM_HTTP_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    <<: *application
+    user: www-data
+    command: ["php", "artisan", "queue:work", "--sleep=3", "--tries=3", "--timeout=${QUEUE_WORKER_TIMEOUT:-60}", "--max-time=3600", "--no-interaction"]
+
+  scheduler:
+    <<: *application
+    user: www-data
+    command: ["php", "artisan", "schedule:work", "--no-interaction"]
+
+  database:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:?Set DB_DATABASE in the production environment file}
+      MYSQL_USER: ${DB_USERNAME:?Set DB_USERNAME in the production environment file}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the production environment file}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in the production environment file}
+    volumes:
+      - database-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --host=127.0.0.1 --user=\"$$MYSQL_USER\" --database=\"$$MYSQL_DATABASE\" --execute='SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  app-storage:
+  database-data:
