@@ -314,6 +314,20 @@ class SiteContentTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_staff_guide_print_control_has_an_accessible_name_when_its_visual_label_is_hidden(): void
+    {
+        Http::preventStrayRequests();
+
+        $response = $this->get('/guide')->assertOk();
+
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $controls = (new DOMXPath($document))->query('//button[@id="print-guide"]');
+        $this->assertCount(1, $controls);
+        $this->assertSame('Print guide', $controls->item(0)->getAttribute('aria-label'));
+        Http::assertNothingSent();
+    }
+
     public function test_live_public_pages_show_real_invoice_checkout_and_only_configured_methods(): void
     {
         Http::preventStrayRequests();
