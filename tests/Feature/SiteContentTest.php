@@ -485,11 +485,19 @@ class SiteContentTest extends TestCase
             ->assertSee('data-workspace-demo-enabled="false"', false)->assertSee('id="demo-pay"', false);
         $document = new DOMDocument;
         $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
-        $links = (new DOMXPath($document))->query('//header//a[contains(@class, "button")] | //a[contains(@class, "feature-link")] | //div[contains(@class, "demo-under")]//a');
-        $this->assertCount(5, $links);
+        $xpath = new DOMXPath($document);
+        $links = $xpath->query('//header//a[contains(@class, "button")] | //div[contains(@class, "demo-under")]//a');
+        $this->assertCount(2, $links);
         foreach ($links as $link) {
             $this->assertSame('/register', $link->getAttribute('href'));
             $this->assertStringContainsString('workspace', $link->textContent);
+        }
+        $featureLinks = $xpath->query('//a[contains(@class, "feature-link")]');
+        $this->assertCount(3, $featureLinks);
+        foreach ([['marketing.inventory', 'inventory'], ['marketing.pos', 'point of sale'], ['guide', 'guide']] as $index => [$routeName, $label]) {
+            $link = $featureLinks->item($index);
+            $this->assertSame(route($routeName, [], false), $link->getAttribute('href'));
+            $this->assertStringContainsString($label, strtolower($link->textContent));
         }
         $this->assertDatabaseCount('tenants', 0);
         $this->assertDatabaseCount('sales', 0);

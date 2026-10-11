@@ -8,17 +8,6 @@
         }), { threshold: 0.08 });
         document.querySelectorAll('.reveal').forEach(element => observer.observe(element));
     }
-    const progress = document.querySelector('.scroll-progress');
-    let scrollPending = false;
-    window.addEventListener('scroll', () => {
-        if (scrollPending) return;
-        scrollPending = true;
-        requestAnimationFrame(() => {
-            const range = document.documentElement.scrollHeight - innerHeight;
-            progress.style.width = `${range > 0 ? scrollY / range * 100 : 0}%`;
-            scrollPending = false;
-        });
-    }, { passive: true });
     const menu = document.querySelector('.menu-toggle');
     const nav = document.querySelector('.desktop-nav');
     const setMenuOpen = (opened, restoreFocus = false) => {
@@ -114,7 +103,7 @@
     };
     track('landing_view');
     document.querySelectorAll('.trial-cta').forEach(link => {
-        if (variant === 'b' && !link.closest('.plan') && !link.hasAttribute('data-cms-copy')) link.childNodes[0].textContent = 'Make room for more ';
+        if (variant === 'b' && !link.closest('.plan') && !link.hasAttribute('data-cms-copy')) link.childNodes[0].textContent = 'Create your workspace';
         link.addEventListener('click', () => track('trial_click'));
     });
     document.querySelectorAll('form[action="/demo"]').forEach(form => form.addEventListener('submit', () => track('demo_open')));
