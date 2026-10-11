@@ -8,9 +8,12 @@ use App\Models\SiteContent;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\SiteContentService;
+use DOMDocument;
+use DOMXPath;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -126,6 +129,50 @@ class SiteContentTest extends TestCase
             'billing.plans.starter.locations' => 7, 'billing.plans.starter.team_members' => 13]);
         $this->get('/')->assertOk()->assertSee('₱735')->assertSee('data-annual="8230"', false)
             ->assertSee('7 store locations')->assertSee('13 team members');
+    }
+
+    #[TestWith(['testing', false])]
+    #[TestWith(['production', false])]
+    #[TestWith(['production', true])]
+    public function test_unavailable_workspace_demo_ctas_link_to_registration_and_keep_the_pos_sample(string $environment, bool $demoEnabled): void
+    {
+        config(['stockroom.demo_enabled' => $demoEnabled]);
+        $this->app->detectEnvironment(fn (): string => $environment);
+
+        $response = $this->get('/')->assertOk()
+            ->assertDontSee('action="/demo"', false)->assertDontSee('Try live demo')->assertDontSee('Open the full live demo')
+            ->assertSee('Create workspace')->assertSee('Create your own workspace')
+            ->assertSee('interactive POS preview')->assertSee('Complete sample sale')->assertSee('Preview only. No payment is charged.')
+            ->assertSee('data-workspace-demo-enabled="false"', false)->assertSee('id="demo-pay"', false);
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $links = (new DOMXPath($document))->query('//header//a[contains(@class, "button")] | //a[contains(@class, "feature-link")] | //div[contains(@class, "demo-under")]//a');
+        $this->assertCount(5, $links);
+        foreach ($links as $link) {
+            $this->assertSame('/register', $link->getAttribute('href'));
+            $this->assertStringContainsString('workspace', $link->textContent);
+        }
+        $this->assertDatabaseCount('tenants', 0);
+        $this->assertDatabaseCount('sales', 0);
+    }
+
+    public function test_enabled_local_workspace_demo_retains_its_section_forms_and_sample(): void
+    {
+        config(['stockroom.demo_enabled' => true]);
+        $this->app->detectEnvironment(fn (): string => 'local');
+
+        $response = $this->get('/')->assertOk()->assertSee('Try live demo')->assertSee('Open the full live demo')
+            ->assertSee('Explore inventory')->assertSee('Explore point of sale')->assertSee('Explore your insights')
+            ->assertSee('data-workspace-demo-enabled="true"', false)->assertSee('Complete sample sale');
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $forms = (new DOMXPath($document))->query('//form[@action="/demo"]');
+        $this->assertCount(5, $forms);
+        foreach ($forms as $form) {
+            $this->assertSame('POST', $form->getAttribute('method'));
+        }
+        $this->assertDatabaseCount('tenants', 0);
+        $this->assertDatabaseCount('sales', 0);
     }
 
     public function test_paused_developer_cannot_save_with_a_stale_actor_object(): void

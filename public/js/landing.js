@@ -76,7 +76,10 @@
     pay.addEventListener('click', () => {
         const amount = total.textContent; cart = []; render();
         const toast = document.querySelector('.demo-toast');
-        toast.textContent = `Sample sale complete · ${amount}. Open the live demo to try real stock tracking.`;
+        const nextStep = document.body.dataset.workspaceDemoEnabled === 'true'
+            ? 'Open the live demo to try real stock tracking.'
+            : 'Create your workspace to start tracking inventory.';
+        toast.textContent = `Sample sale complete · ${amount}. ${nextStep}`;
         toast.classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('visible'), 5500);
     });
     const sitePreview = document.body.dataset.sitePreview === 'true';
