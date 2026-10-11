@@ -11,7 +11,7 @@ use App\Services\MonitoringService;
 use App\Services\SiteContentService;
 use DOMDocument;
 use DOMXPath;
-use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Testing\TestResponse;
@@ -22,7 +22,7 @@ use Tests\TestCase;
 
 class SeoEndpointsTest extends TestCase
 {
-    use LazilyRefreshDatabase;
+    use RefreshDatabase;
 
     protected function setUp(): void
     {
@@ -53,7 +53,7 @@ class SeoEndpointsTest extends TestCase
         return array_map(fn ($node): string => $node->textContent, iterator_to_array($xpath->query('/sitemap:urlset/sitemap:url/sitemap:loc')));
     }
 
-    public function test_production_sitemap_contains_only_three_trusted_public_urls_without_queries_or_invented_dates(): void
+    public function test_production_sitemap_contains_only_trusted_public_pages_without_queries_or_invented_dates(): void
     {
         $tenant = Tenant::factory()->create(['name' => 'Private business outside the sitemap']);
         User::factory()->create(['tenant_id' => $tenant->id, 'email' => 'private-owner@example.test']);
@@ -69,7 +69,14 @@ class SeoEndpointsTest extends TestCase
             ->assertHeader('X-Content-Type-Options', 'nosniff');
 
         $this->assertPrivate($response);
-        $this->assertSame(['https://posonly.example/', 'https://posonly.example/guide', 'https://posonly.example/privacy'], $this->sitemapUrls($response));
+        $this->assertSame([
+            'https://posonly.example/',
+            'https://posonly.example/inventory-management',
+            'https://posonly.example/point-of-sale',
+            'https://posonly.example/about',
+            'https://posonly.example/guide',
+            'https://posonly.example/privacy',
+        ], $this->sitemapUrls($response));
         $this->assertSame([], $queries);
         foreach (['lastmod', '/app', '/api', '/login', '/register', '/developer', '/webhooks', 'private-token', 'untrusted.example', $tenant->name, 'private-owner@example.test'] as $privateValue) {
             $response->assertDontSee($privateValue, false);
@@ -96,6 +103,9 @@ class SeoEndpointsTest extends TestCase
     }
 
     #[TestWith(['/'])]
+    #[TestWith(['/inventory-management'])]
+    #[TestWith(['/point-of-sale'])]
+    #[TestWith(['/about'])]
     #[TestWith(['/guide'])]
     #[TestWith(['/privacy'])]
     public function test_only_production_public_pages_are_indexable_with_canonicals_independent_of_request_host_and_query(string $path): void
@@ -107,7 +117,8 @@ class SeoEndpointsTest extends TestCase
 
         $response->assertViewHas('seo', fn (array $seo): bool => $seo['canonical_url'] === 'https://posonly.example'.$path
             && $seo['site_url'] === 'https://posonly.example' && $seo['indexable'] === true
-            && $seo['robots'] === 'index, follow' && $seo['image_url'] === null);
+            && $seo['robots'] === 'index, follow' && $seo['image_url'] === 'https://posonly.example/images/posonly-social.png');
+        $response->assertSee('<meta name="googlebot" content="index, follow, max-image-preview:large">', false);
         Http::assertNothingSent();
     }
 
@@ -125,9 +136,10 @@ class SeoEndpointsTest extends TestCase
     public function test_nonproduction_environments_do_not_publish_indexable_pages_or_sitemap_entries(string $environment): void
     {
         $this->app->detectEnvironment(fn (): string => $environment);
-        foreach (['/', '/guide', '/privacy'] as $path) {
+        foreach (['/', '/inventory-management', '/point-of-sale', '/about', '/guide', '/privacy'] as $path) {
             $response = $this->get($path)->assertOk()->assertViewHas('seo', fn (array $seo): bool => $seo['indexable'] === false);
             $this->assertPrivate($response);
+            $response->assertDontSee('name="googlebot"', false);
         }
         $sitemap = $this->get('/sitemap.xml')->assertOk();
         $this->assertPrivate($sitemap);
@@ -162,7 +174,8 @@ class SeoEndpointsTest extends TestCase
         config(['app.url' => $siteUrl]);
 
         $home = $this->get('/')->assertOk()->assertViewHas('seo', fn (array $seo): bool => $seo['canonical_url'] === null
-            && $seo['site_url'] === null && $seo['indexable'] === false);
+            && $seo['site_url'] === null && $seo['indexable'] === false && $seo['image_url'] === null);
+        $home->assertDontSee('application/ld+json')->assertDontSee('property="og:image"', false)->assertDontSee('name="twitter:image"', false);
         $this->assertPrivate($home);
         $this->assertPrivate($this->get('/sitemap.xml')->assertStatus(503));
         $robots = $this->get('/robots.txt')->assertOk();

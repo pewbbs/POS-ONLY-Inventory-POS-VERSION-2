@@ -10,7 +10,7 @@ use App\Models\User;
 use App\Services\SiteContentService;
 use DOMDocument;
 use DOMXPath;
-use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\TestWith;
@@ -19,7 +19,7 @@ use Tests\TestCase;
 
 class SiteContentTest extends TestCase
 {
-    use LazilyRefreshDatabase;
+    use RefreshDatabase;
 
     private function content(array $overrides = []): array
     {
@@ -43,9 +43,12 @@ class SiteContentTest extends TestCase
     }
 
     #[TestWith(['/', 'POSONLY | Cloud Inventory & POS System in the Philippines'])]
+    #[TestWith(['/inventory-management', 'Cloud Inventory Management Software Philippines | POSONLY'])]
+    #[TestWith(['/point-of-sale', 'Cloud POS Software for Philippine Businesses | POSONLY'])]
+    #[TestWith(['/about', 'About POSONLY | Cloud Inventory and POS in the Philippines'])]
     #[TestWith(['/guide', 'POSONLY User Guide | Inventory & POS Handbook'])]
     #[TestWith(['/privacy', 'Privacy Policy | POSONLY'])]
-    public function test_public_metadata_matches_its_page_and_has_no_unavailable_social_image(string $path, string $title): void
+    public function test_public_metadata_matches_its_page_and_publishes_the_trusted_social_image(string $path, string $title): void
     {
         Http::preventStrayRequests();
         config(['app.url' => 'https://posonly.example']);
@@ -64,18 +67,33 @@ class SiteContentTest extends TestCase
         $this->assertSame($description, $xpath->evaluate('string(//meta[@property="og:description"]/@content)'));
         $this->assertSame($description, $xpath->evaluate('string(//meta[@name="twitter:description"]/@content)'));
         $this->assertSame('https://posonly.example'.$path, $xpath->evaluate('string(//link[@rel="canonical"]/@href)'));
-        $this->assertSame('summary', $xpath->evaluate('string(//meta[@name="twitter:card"]/@content)'));
-        $this->assertCount(0, $xpath->query('//meta[@property="og:image"] | //meta[@name="twitter:image"]'));
+        $this->assertSame('summary_large_image', $xpath->evaluate('string(//meta[@name="twitter:card"]/@content)'));
+        $this->assertSame('https://posonly.example/images/posonly-social.png', $xpath->evaluate('string(//meta[@property="og:image"]/@content)'));
+        $this->assertSame('https://posonly.example/images/posonly-social.png', $xpath->evaluate('string(//meta[@name="twitter:image"]/@content)'));
+        $this->assertSame('1200', $xpath->evaluate('string(//meta[@property="og:image:width"]/@content)'));
+        $this->assertSame('630', $xpath->evaluate('string(//meta[@property="og:image:height"]/@content)'));
         $this->assertSame('/images/favicon.png', $xpath->evaluate('string(//link[@rel="icon"]/@href)'));
         Http::assertNothingSent();
     }
 
-    public function test_homepage_structured_data_identifies_only_the_real_site_and_verified_logo(): void
+    public function test_social_preview_asset_matches_its_published_dimensions_and_format(): void
+    {
+        $image = public_path('images/posonly-social.png');
+
+        $this->assertFileExists($image);
+        $dimensions = getimagesize($image);
+
+        $this->assertSame(1200, $dimensions[0]);
+        $this->assertSame(630, $dimensions[1]);
+        $this->assertSame('image/png', $dimensions['mime']);
+    }
+
+    public function test_homepage_structured_data_links_the_site_page_and_software_without_invented_ratings_or_addresses(): void
     {
         Http::preventStrayRequests();
         config(['app.url' => 'https://posonly.example']);
 
-        $response = $this->get('/')->assertOk()->assertSeeText('Cloud inventory and POS for Philippine businesses.');
+        $response = $this->get('/')->assertOk()->assertSeeText('Inventory management and point of sale for Philippine businesses.');
         $document = new DOMDocument;
         $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
         $scripts = (new DOMXPath($document))->query('//script[@type="application/ld+json"]');
@@ -83,13 +101,119 @@ class SiteContentTest extends TestCase
         $this->assertCount(1, $scripts);
         $data = json_decode($scripts->item(0)->textContent, true, flags: JSON_THROW_ON_ERROR);
         $this->assertSame('https://schema.org', $data['@context']);
-        $this->assertSame(['Organization', 'WebSite'], array_column($data['@graph'], '@type'));
+        $this->assertSame(['Organization', 'WebSite', 'WebPage', 'SoftwareApplication'], array_column($data['@graph'], '@type'));
         $this->assertSame('POSONLY', $data['@graph'][0]['name']);
         $this->assertSame('https://posonly.example/', $data['@graph'][1]['url']);
         $this->assertSame('https://posonly.example/images/favicon.png', $data['@graph'][0]['logo']['url']);
         $this->assertSame(192, $data['@graph'][0]['logo']['width']);
         $this->assertSame(192, $data['@graph'][0]['logo']['height']);
-        $response->assertDontSee('aggregateRating')->assertDontSee('SoftwareApplication');
+        $this->assertSame('https://posonly.example/#organization', $data['@graph'][0]['@id']);
+        $this->assertSame('https://posonly.example/#website', $data['@graph'][1]['@id']);
+        $this->assertSame(['@id' => 'https://posonly.example/#website'], $data['@graph'][2]['isPartOf']);
+        $this->assertSame(['@id' => 'https://posonly.example/#software'], $data['@graph'][2]['mainEntity']);
+        $this->assertSame('https://posonly.example/#software', $data['@graph'][3]['@id']);
+        $this->assertSame('BusinessApplication', $data['@graph'][3]['applicationCategory']);
+        $this->assertSame(['PH'], $data['@graph'][3]['countriesSupported']);
+        foreach ($data['@graph'] as $entity) {
+            $this->assertArrayNotHasKey('aggregateRating', $entity);
+            $this->assertArrayNotHasKey('review', $entity);
+            $this->assertArrayNotHasKey('address', $entity);
+            $this->assertArrayNotHasKey('sameAs', $entity);
+            $this->assertNotSame('LocalBusiness', $entity['@type']);
+        }
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['/inventory-management', 'WebPage', true])]
+    #[TestWith(['/point-of-sale', 'WebPage', true])]
+    #[TestWith(['/about', 'AboutPage', false])]
+    #[TestWith(['/guide', 'WebPage', false])]
+    #[TestWith(['/privacy', 'WebPage', false])]
+    public function test_public_pages_share_site_identities_and_keep_their_own_canonical_page(string $path, string $pageType, bool $hasSoftware): void
+    {
+        Http::preventStrayRequests();
+        config(['app.url' => 'https://posonly.example']);
+
+        $response = $this->get('https://untrusted.example'.$path.'?token=ignored')->assertOk();
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $scripts = (new DOMXPath($document))->query('//script[@type="application/ld+json"]');
+        $this->assertCount(1, $scripts);
+        $graph = json_decode($scripts->item(0)->textContent, true, flags: JSON_THROW_ON_ERROR)['@graph'];
+
+        $this->assertSame('https://posonly.example/#organization', $graph[0]['@id']);
+        $this->assertSame('https://posonly.example/', $graph[0]['url']);
+        $this->assertSame('https://posonly.example/#website', $graph[1]['@id']);
+        $this->assertSame('https://posonly.example/', $graph[1]['url']);
+        $this->assertSame($pageType, $graph[2]['@type']);
+        $this->assertSame('https://posonly.example'.$path.'#webpage', $graph[2]['@id']);
+        $this->assertSame('https://posonly.example'.$path, $graph[2]['url']);
+        $this->assertSame(['@id' => 'https://posonly.example/#website'], $graph[2]['isPartOf']);
+        $this->assertSame(['@id' => 'https://posonly.example/#organization'], $graph[2]['publisher']);
+        $this->assertSame($hasSoftware, in_array('SoftwareApplication', array_column($graph, '@type'), true));
+        $this->assertStringNotContainsString('untrusted.example', json_encode($graph, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('ignored', json_encode($graph, JSON_THROW_ON_ERROR));
+        if ($pageType === 'AboutPage') {
+            $this->assertSame(['@id' => 'https://posonly.example/#organization'], $graph[2]['about']);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_software_offers_match_configured_invoice_prices_and_billing_periods(): void
+    {
+        Http::preventStrayRequests();
+        config(['app.url' => 'https://posonly.example', 'billing.plans.starter.monthly_cents' => 73525,
+            'billing.plans.starter.annual_cents' => 823025]);
+
+        $response = $this->get('/')->assertOk();
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $scripts = (new DOMXPath($document))->query('//script[@type="application/ld+json"]');
+        $graph = json_decode($scripts->item(0)->textContent, true, flags: JSON_THROW_ON_ERROR)['@graph'];
+        $offers = $graph[3]['offers'];
+
+        $this->assertCount(6, $offers);
+        $this->assertSame(['Starter monthly subscription', 'Starter annual subscription', 'Grow monthly subscription',
+            'Grow annual subscription', 'Scale monthly subscription', 'Scale annual subscription'], array_column($offers, 'name'));
+        $this->assertSame(['735.25', '8230.25', '999.00', '9590.40', '1999.00', '19190.40'], array_column($offers, 'price'));
+        $this->assertSame(['P1M', 'P1Y', 'P1M', 'P1Y', 'P1M', 'P1Y'], array_column(array_column($offers, 'priceSpecification'), 'billingDuration'));
+        foreach ($offers as $offer) {
+            $this->assertSame('PHP', $offer['priceCurrency']);
+            $this->assertSame('https://posonly.example/#pricing', $offer['url']);
+            $this->assertSame($offer['price'], $offer['priceSpecification']['price']);
+            $this->assertSame('PHP', $offer['priceSpecification']['priceCurrency']);
+            $this->assertStringContainsString('no automatic recurring charge', $offer['description']);
+        }
+        $this->assertDatabaseCount('subscriptions', 0);
+        $this->assertDatabaseCount('billing_invoices', 0);
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['/inventory-management', 'Inventory management'])]
+    #[TestWith(['/point-of-sale', 'Point of sale'])]
+    #[TestWith(['/about', 'About POSONLY'])]
+    public function test_marketing_breadcrumbs_match_visible_navigation_and_trusted_canonical_urls(string $path, string $label): void
+    {
+        Http::preventStrayRequests();
+        config(['app.url' => 'https://posonly.example']);
+
+        $response = $this->get('https://untrusted.example'.$path.'?token=ignored')->assertOk();
+        $document = new DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $xpath = new DOMXPath($document);
+        $scripts = $xpath->query('//script[@type="application/ld+json"]');
+        $graph = json_decode($scripts->item(0)->textContent, true, flags: JSON_THROW_ON_ERROR)['@graph'];
+        $breadcrumbs = array_values(array_filter($graph, fn (array $entity): bool => $entity['@type'] === 'BreadcrumbList'));
+
+        $this->assertSame('Home', $xpath->evaluate('string(//nav[@aria-label="Breadcrumb"]/a)'));
+        $this->assertSame($label, $xpath->evaluate('string(//nav[@aria-label="Breadcrumb"]/*[@aria-current="page"])'));
+        $this->assertCount(1, $breadcrumbs);
+        $this->assertSame('https://posonly.example'.$path.'#breadcrumb', $breadcrumbs[0]['@id']);
+        $this->assertSame(['@id' => 'https://posonly.example'.$path.'#breadcrumb'], $graph[2]['breadcrumb']);
+        $this->assertSame([
+            ['@type' => 'ListItem', 'position' => 1, 'name' => 'Home', 'item' => 'https://posonly.example/'],
+            ['@type' => 'ListItem', 'position' => 2, 'name' => $label, 'item' => 'https://posonly.example'.$path],
+        ], $breadcrumbs[0]['itemListElement']);
         Http::assertNothingSent();
     }
 
@@ -110,6 +234,7 @@ class SiteContentTest extends TestCase
         $this->assertSame($title, $xpath->evaluate('string(//head/title)'));
         $this->assertSame($description, $xpath->evaluate('string(//meta[@name="description"]/@content)'));
         $this->assertSame($description, $data['@graph'][1]['description']);
+        $this->assertSame($description, $data['@graph'][2]['description']);
         $this->assertCount(0, $xpath->query('//script[@id="metadata-injection"]'));
         Http::assertNothingSent();
     }
@@ -125,7 +250,7 @@ class SiteContentTest extends TestCase
         $xpath = new DOMXPath($document);
 
         $this->assertSame('noindex, nofollow', $xpath->evaluate('string(//meta[@name="robots"]/@content)'));
-        $this->assertCount(0, $xpath->query('//link[@rel="canonical"] | //meta[@property="og:url"] | //script[@type="application/ld+json"]'));
+        $this->assertCount(0, $xpath->query('//link[@rel="canonical"] | //meta[@property="og:url"] | //meta[@property="og:image"] | //meta[@name="twitter:image"] | //script[@type="application/ld+json"]'));
         Http::assertNothingSent();
     }
 

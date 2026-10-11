@@ -8,6 +8,7 @@ use App\Http\Controllers\CashSessionController;
 use App\Http\Controllers\CommerceController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\FinancialReportController;
+use App\Http\Controllers\MarketingPageController;
 use App\Http\Controllers\MonitoringController;
 use App\Http\Controllers\PasswordRecoveryController;
 use App\Http\Controllers\PayMongoBillingController;
@@ -33,6 +34,9 @@ require __DIR__.'/developer.php';
 require __DIR__.'/social-auth.php';
 
 Route::get('/', [SiteContentController::class, 'home'])->name('home');
+Route::get('/inventory-management', [MarketingPageController::class, 'inventory'])->name('marketing.inventory');
+Route::get('/point-of-sale', [MarketingPageController::class, 'pos'])->name('marketing.pos');
+Route::get('/about', [MarketingPageController::class, 'about'])->name('marketing.about');
 Route::get('/guide', fn (PayMongoClient $payments, SeoService $seo): View => view('guide', ['paymentConfig' => $payments->configuration(), 'seo' => $seo->metadata('/guide')]))->name('guide');
 Route::get('/privacy', fn (PayMongoClient $payments, SeoService $seo): View => view('privacy', ['paymentConfig' => $payments->configuration(), 'seo' => $seo->metadata('/privacy')]))->name('privacy');
 Route::get('/sitemap.xml', [SeoController::class, 'sitemap'])->name('seo.sitemap');

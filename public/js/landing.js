@@ -47,7 +47,8 @@
         document.querySelectorAll('[data-monthly]').forEach(price => {
             const amount = annual ? Number(price.dataset.annual) / 12 : Number(price.dataset.monthly);
             price.textContent = peso(amount).replace(/\.00$/, '');
-            price.closest('.plan').querySelector('.billing-note').textContent = annual ? `${peso(Number(price.dataset.annual))} / year · test billing` : 'Local test billing price';
+            const note = price.closest('.plan').querySelector('.billing-note');
+            note.textContent = annual ? note.dataset.annualNote : note.dataset.monthlyNote;
         });
     }));
     let cart = [];
