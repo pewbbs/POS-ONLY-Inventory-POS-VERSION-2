@@ -691,12 +691,17 @@ class PayMongoBillingEndpointTest extends TestCase
         $this->assertSame('open', $store['invoice']->refresh()->status);
     }
 
-    public function test_checkout_creation_is_not_repeated_after_an_unknown_response_or_a_later_recheck(): void
+    #[TestWith([408])]
+    #[TestWith([409])]
+    #[TestWith([425])]
+    #[TestWith([429])]
+    #[TestWith([503])]
+    public function test_checkout_creation_is_not_repeated_after_an_unknown_response_or_a_later_recheck(int $status): void
     {
         $this->configurePayMongo();
         $this->freezeTime();
         $store = $this->billing();
-        Http::fake(['https://api.paymongo.com/v2/checkout_sessions' => Http::response([], 503)]);
+        Http::fake(['https://api.paymongo.com/v2/checkout_sessions' => Http::response([], $status)]);
         $path = '/api/billing/invoices/'.$store['invoice']->id;
 
         $response = $this->actingAs($store['user'])->postJson($path.'/paymongo-checkout')->assertOk()
@@ -710,6 +715,33 @@ class PayMongoBillingEndpointTest extends TestCase
         $this->assertDatabaseCount('billing_payment_attempts', 1);
         $this->assertSame('open', $store['invoice']->refresh()->status);
         $this->assertNull($store['subscription']->refresh()->current_period_end);
+    }
+
+    public function test_checkout_without_provider_payment_collection_stays_unresolved_and_never_repeats_creation(): void
+    {
+        $this->configurePayMongo();
+        $this->freezeSecond();
+        $store = $this->billing();
+        $invoiceBefore = $store['invoice']->refresh()->getAttributes();
+        $subscriptionBefore = $store['subscription']->refresh()->getAttributes();
+        Http::fake(['https://api.paymongo.com/v2/checkout_sessions' => function (Request $request) {
+            $resource = $this->pendingSession($request['data']['attributes']['reference_number']);
+            unset($resource['data']['attributes']['payments']);
+
+            return Http::response($resource);
+        }]);
+        $path = '/api/billing/invoices/'.$store['invoice']->id;
+
+        $first = $this->actingAs($store['user'])->postJson($path.'/paymongo-checkout')->assertOk()
+            ->assertJsonPath('attempt.status', 'unknown')->assertJsonPath('attempt.session_id', null)->assertJsonPath('checkout_url', null);
+        $this->postJson($path.'/paymongo-checkout')->assertOk()->assertJsonPath('attempt.id', $first->json('attempt.id'))
+            ->assertJsonPath('attempt.status', 'unknown')->assertJsonPath('checkout_url', null);
+
+        $this->assertSame($invoiceBefore, $store['invoice']->refresh()->getAttributes());
+        $this->assertSame($subscriptionBefore, $store['subscription']->refresh()->getAttributes());
+        $this->assertDatabaseCount('billing_payment_attempts', 1);
+        $this->assertDatabaseHas('billing_payment_attempts', ['id' => $first->json('attempt.id'), 'payment_id' => null, 'confirmed_at' => null]);
+        Http::assertSentCount(1);
     }
 
     private function unresolvedAttempt(BillingInvoice $invoice): BillingPaymentAttempt

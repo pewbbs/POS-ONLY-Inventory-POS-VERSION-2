@@ -6,6 +6,7 @@ use App\Jobs\ProcessPayMongoWebhook;
 use App\Models\BillingInvoice;
 use App\Models\BillingPaymentAttempt;
 use App\Models\PayMongoWebhookEvent;
+use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\BillingService;
@@ -215,6 +216,23 @@ class PayMongoWebhookTest extends TestCase
         $this->assertDatabaseCount('paymongo_webhook_events', 0);
     }
 
+    #[TestWith([-300])]
+    #[TestWith([300])]
+    public function test_signature_accepts_the_exact_raw_body_at_the_timestamp_tolerance_boundary(int $offset): void
+    {
+        $this->freezeSecond();
+        $body = " \n".json_encode($this->payload(true), JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT)."\n ";
+
+        $this->send($body, $this->signature($body, now()->timestamp + $offset))
+            ->assertOk()->assertJsonPath('status', 'queued');
+
+        $receipt = PayMongoWebhookEvent::firstOrFail();
+        $this->assertSame(hash('sha256', $body), $receipt->payload_digest);
+        Queue::assertPushed(ProcessPayMongoWebhook::class, fn (ProcessPayMongoWebhook $job): bool => $job->eventId === $receipt->id);
+        Queue::assertCount(1);
+        Http::assertNothingSent();
+    }
+
     #[TestWith([true])]
     #[TestWith([null])]
     public function test_live_or_unspecified_event_mode_is_rejected(mixed $mode): void
@@ -358,6 +376,130 @@ class PayMongoWebhookTest extends TestCase
         $this->send(json_encode($payload, JSON_THROW_ON_ERROR), null, $live ? '/webhooks/paymongo' : '/webhooks/paymongo/test')->assertOk()->assertJsonPath('status', 'queued');
 
         return PayMongoWebhookEvent::firstOrFail();
+    }
+
+    private function retrievedSession(BillingPaymentAttempt $attempt, bool $paid = true): array
+    {
+        return ['data' => ['id' => $attempt->session_id, 'type' => 'checkout_session', 'attributes' => [
+            'livemode' => false, 'reference_number' => $attempt->reference,
+            'line_items' => $attempt->checkout_payload['data']['attributes']['line_items'],
+            'status' => 'active', 'checkout_url' => 'https://checkout.paymongo.com/private-fixture-link',
+            'payments' => $paid ? [['id' => 'pay_verified_retry', 'type' => 'payment', 'attributes' => [
+                'status' => 'paid', 'livemode' => false, 'amount' => $attempt->amount_cents, 'currency' => 'PHP',
+                'paid_at' => now()->timestamp, 'source' => ['type' => 'card'], 'refunds' => [],
+            ]]] : [],
+        ]]];
+    }
+
+    public function test_signed_paid_claim_waits_for_provider_confirmation_and_redelivery_recovers_once(): void
+    {
+        $this->freezeSecond();
+        $attempt = $this->checkout();
+        $receipt = $this->queueAttempt($attempt);
+        $subscription = Subscription::findOrFail($attempt->invoice->subscription_id);
+        $subscriptionBefore = $subscription->getAttributes();
+        $foreignInvoice = BillingInvoice::factory()->create()->refresh();
+        $foreignBefore = $foreignInvoice->getAttributes();
+        Http::fake(['https://api.paymongo.com/v1/checkout_sessions/cs_webhook_fixture' => Http::sequence()
+            ->push($this->retrievedSession($attempt, false))
+            ->push($this->retrievedSession($attempt))]);
+        $job = new ProcessPayMongoWebhook($receipt->id);
+
+        try {
+            $job->handle(app(PayMongoBillingService::class));
+            $this->fail('A signed paid notification must not settle an unconfirmed provider payment.');
+        } catch (RuntimeException $error) {
+            $this->assertSame('PayMongo payment verification is temporarily unavailable.', $error->getMessage());
+            $job->failed($error);
+        }
+
+        $this->assertSame('failed', $receipt->refresh()->status);
+        $this->assertNull($receipt->processed_at);
+        $this->assertSame('pending', $attempt->refresh()->status);
+        $this->assertSame('open', $attempt->invoice->refresh()->status);
+        $this->assertNull($attempt->invoice->paid_at);
+        $this->assertSame($subscriptionBefore, $subscription->refresh()->getAttributes());
+        Http::assertSentCount(1);
+
+        $payload = $this->payload();
+        $payload['data']['data']['attributes']['reference_number'] = $attempt->reference;
+        $body = json_encode($payload, JSON_THROW_ON_ERROR);
+        $this->send($body)->assertOk()->assertJsonPath('status', 'queued');
+        $job->handle(app(PayMongoBillingService::class));
+        $periodEnd = $subscription->refresh()->current_period_end->toIso8601String();
+        $this->send($body)->assertOk()->assertJsonPath('status', 'received');
+        $job->handle(app(PayMongoBillingService::class));
+
+        $this->assertSame('paid', $attempt->refresh()->status);
+        $this->assertSame('pay_verified_retry', $attempt->payment_id);
+        $this->assertSame('paid', $attempt->invoice->refresh()->status);
+        $this->assertSame('active', $subscription->refresh()->status);
+        $this->assertSame($periodEnd, $subscription->current_period_end->toIso8601String());
+        $this->assertSame('processed', $receipt->refresh()->status);
+        $this->assertNotNull($receipt->processed_at);
+        $this->assertNull($receipt->failure_summary);
+        $this->assertSame($foreignBefore, $foreignInvoice->refresh()->getAttributes());
+        $this->assertDatabaseCount('paymongo_webhook_events', 1);
+        $this->assertDatabaseCount('billing_payment_attempts', 1);
+        Queue::assertCount(2);
+        Http::assertSentCount(2);
+    }
+
+    public function test_signed_session_with_another_company_reference_cannot_settle_either_company(): void
+    {
+        $this->freezeSecond();
+        $attempt = $this->checkout();
+        $foreignAttempt = BillingPaymentAttempt::factory()->create()->refresh();
+        $attemptBefore = $attempt->getAttributes();
+        $invoiceBefore = $attempt->invoice->getAttributes();
+        $subscription = Subscription::findOrFail($attempt->invoice->subscription_id);
+        $subscriptionBefore = $subscription->getAttributes();
+        $foreignBefore = $foreignAttempt->getAttributes();
+        $foreignInvoiceBefore = $foreignAttempt->invoice->getAttributes();
+        $payload = $this->payload(true);
+        $payload['data']['attributes']['data']['attributes']['reference_number'] = $foreignAttempt->reference;
+
+        $this->send(json_encode($payload, JSON_THROW_ON_ERROR))->assertOk()->assertJsonPath('status', 'queued');
+        $receipt = PayMongoWebhookEvent::firstOrFail();
+        (new ProcessPayMongoWebhook($receipt->id))->handle(app(PayMongoBillingService::class));
+
+        $this->assertSame($attemptBefore, $attempt->refresh()->getAttributes());
+        $this->assertSame($invoiceBefore, $attempt->invoice->refresh()->getAttributes());
+        $this->assertSame($subscriptionBefore, $subscription->refresh()->getAttributes());
+        $this->assertSame($foreignBefore, $foreignAttempt->refresh()->getAttributes());
+        $this->assertSame($foreignInvoiceBefore, $foreignAttempt->invoice->refresh()->getAttributes());
+        $this->assertSame('processed', $receipt->refresh()->status);
+        $this->assertDatabaseCount('billing_payment_attempts', 2);
+        Queue::assertCount(1);
+        Http::assertSentCount(1);
+    }
+
+    public function test_reviewed_payment_receipt_keeps_evidence_without_granting_subscription_access(): void
+    {
+        $this->freezeSecond();
+        $attempt = $this->checkout();
+        $receipt = $this->queueAttempt($attempt);
+        $subscription = Subscription::findOrFail($attempt->invoice->subscription_id);
+        $subscriptionBefore = $subscription->getAttributes();
+        $response = $this->retrievedSession($attempt);
+        $response['data']['attributes']['payments'][0]['attributes']['refunds'] = [['id' => 'ref_fixture']];
+        Http::fake(['https://api.paymongo.com/v1/checkout_sessions/cs_webhook_fixture' => Http::response($response)]);
+        $job = new ProcessPayMongoWebhook($receipt->id);
+
+        $job->handle(app(PayMongoBillingService::class));
+        $job->handle(app(PayMongoBillingService::class));
+        $job->failed(new RuntimeException('late-private-worker-error'));
+
+        $this->assertSame('needs_review', $attempt->refresh()->status);
+        $this->assertSame('pay_verified_retry', $attempt->payment_id);
+        $this->assertNotNull($attempt->confirmed_at);
+        $this->assertSame('open', $attempt->invoice->refresh()->status);
+        $this->assertNull($attempt->invoice->paid_at);
+        $this->assertSame($subscriptionBefore, $subscription->refresh()->getAttributes());
+        $this->assertSame('processed', $receipt->refresh()->status);
+        $this->assertNull($receipt->failure_summary);
+        Queue::assertCount(1);
+        Http::assertSentCount(1);
     }
 
     public function test_queued_job_retrieves_provider_payment_and_replay_never_extends_the_period(): void

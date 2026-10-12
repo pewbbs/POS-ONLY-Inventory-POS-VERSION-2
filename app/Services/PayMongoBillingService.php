@@ -292,7 +292,7 @@ class PayMongoBillingService
 
                 return $attempt;
             }
-            $payments = $attributes['payments'] ?? [];
+            $payments = $attributes['payments'] ?? null;
             if (! is_array($payments)) {
                 if ($terminalUnpaid) {
                     return $attempt;

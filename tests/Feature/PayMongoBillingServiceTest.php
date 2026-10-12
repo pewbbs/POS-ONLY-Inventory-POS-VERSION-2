@@ -510,6 +510,7 @@ class PayMongoBillingServiceTest extends TestCase
             'wrong quote quantity' => ['data.attributes.line_items.0.quantity', 2],
             'missing quote' => ['data.attributes.line_items', []],
             'invalid payment collection' => ['data.attributes.payments', 'paid'],
+            'null payment collection' => ['data.attributes.payments', null],
             'invalid payment identifier' => ['data.attributes.payments.0.id', '../../private'],
             'wrong paid resource' => ['data.attributes.payments.0.type', 'refund'],
             'live payment' => ['data.attributes.payments.0.attributes.livemode', true],
