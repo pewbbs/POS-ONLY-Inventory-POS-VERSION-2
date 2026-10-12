@@ -84,7 +84,8 @@ class CashSessionService
     public function close(User $user, int $id, array $data): CashSession
     {
         $counted = InventoryService::cents($data['counted_cash']);
-        $reason = trim($data['reason'] ?? '') ?: null;
+        $reason = trim($data['reason'] ?? '');
+        $reason = $reason === '' ? null : $reason;
         $hash = $this->hash(['counted_cash' => $counted, 'reason' => $reason]);
 
         return DB::transaction(function () use ($user, $id, $data, $counted, $reason, $hash): CashSession {

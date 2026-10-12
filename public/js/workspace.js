@@ -75,6 +75,7 @@
         cashSessions: null,
         cashLoading: false,
         cashError: null,
+        cashRequest: 0,
         commerce: null,
         commerceLoading: false,
         commerceRequest: 0,
@@ -794,12 +795,23 @@
 
     async function loadCashSessions() {
         if (state.pendingRecordAction) { recordRecoveryModal(); return; }
-        if (state.cashLoading) { return; }
-        state.cashLoading = true; state.cashError = null;
+        const request = ++state.cashRequest;
+        const locationId = state.location;
+        state.cashLoading = true; state.cashError = null; state.cashSessions = null;
         openModal('Cash session', `${escape(currentLocation()?.name)} · your own cash session`, '<div class="quiet-state"><span class="loading-line" style="display:block;margin:15px auto"></span><h3>Getting your cash session…</h3></div>');
-        try { state.cashSessions = await api(`/cash-sessions?location_id=${state.location}`); }
-        catch (failure) { state.cashError = failure.message; }
-        finally { state.cashLoading = false; cashSessionModal(); }
+        const dialogRequest = state.saleRecordRequest;
+        const current = () => request === state.cashRequest && dialogRequest === state.saleRecordRequest && locationId === state.location && modal.open;
+        try {
+            const result = await api(`/cash-sessions?location_id=${locationId}`);
+            if (current()) { state.cashSessions = result; }
+        } catch (failure) {
+            if (current()) { state.cashError = failure.message; }
+        } finally {
+            if (request === state.cashRequest) {
+                state.cashLoading = false;
+                if (current()) { cashSessionModal(); }
+            }
+        }
     }
 
     function cashSessionModal() {

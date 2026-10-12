@@ -9,6 +9,7 @@ use App\Models\Stock;
 use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class CashSessionsTest extends TestCase
@@ -122,6 +123,29 @@ class CashSessionsTest extends TestCase
         $this->assertDatabaseHas('cash_sessions', ['id' => $id, 'cash_out_cents' => 0]);
     }
 
+    public function test_failed_cash_counter_update_rolls_back_movement_and_same_key_retry_records_once(): void
+    {
+        $store = $this->store();
+        $id = $this->open($store);
+        $data = ['direction' => 'in', 'amount' => 25.25, 'reason' => 'Extra change', 'idempotency_key' => 'failed-cash-movement-key'];
+        DB::unprepared("CREATE TEMP TRIGGER fail_cash_counter BEFORE UPDATE OF cash_in_cents ON cash_sessions BEGIN SELECT RAISE(ABORT, 'isolated cash counter failure'); END");
+
+        try {
+            $this->postJson('/api/cash-sessions/'.$id.'/adjustments', $data)->assertInternalServerError();
+            $this->assertDatabaseCount('cash_adjustments', 0);
+            $this->assertDatabaseHas('cash_sessions', ['id' => $id, 'status' => 'open', 'cash_in_cents' => 0, 'cash_out_cents' => 0]);
+        } finally {
+            DB::unprepared('DROP TRIGGER fail_cash_counter');
+        }
+
+        $this->postJson('/api/cash-sessions/'.$id.'/adjustments', $data)
+            ->assertOk()->assertJsonPath('expected_cash', 125.25)->assertJsonCount(1, 'adjustments');
+        $this->postJson('/api/cash-sessions/'.$id.'/adjustments', $data)
+            ->assertOk()->assertJsonPath('expected_cash', 125.25)->assertJsonCount(1, 'adjustments');
+        $this->assertDatabaseCount('cash_adjustments', 1);
+        $this->assertDatabaseHas('cash_sessions', ['id' => $id, 'cash_in_cents' => 2525]);
+    }
+
     public function test_close_snapshots_count_expected_cash_and_signed_variance_once(): void
     {
         $this->freezeTime();
@@ -147,6 +171,24 @@ class CashSessionsTest extends TestCase
         $this->assertDatabaseHas('cash_sessions', ['id' => $oldId, 'cash_sales_cents' => 0, 'expected_cash_cents' => 10000, 'variance_cents' => 500]);
         $this->assertDatabaseHas('cash_sessions', ['id' => $newId, 'cash_sales_cents' => 90720]);
         $this->postJson('/api/cash-sessions/open', $this->opening($store))->assertCreated()->assertJsonPath('id', $oldId)->assertJsonPath('status', 'closed');
+    }
+
+    public function test_close_preserves_zero_as_a_note_and_rejects_a_changed_note_on_retry(): void
+    {
+        $store = $this->store();
+        $id = $this->open($store);
+        $close = ['counted_cash' => 100, 'reason' => '0', 'idempotency_key' => 'close-zero-note-key'];
+
+        $this->postJson('/api/cash-sessions/'.$id.'/close', $close)
+            ->assertOk()->assertJsonPath('close_reason', '0')->assertJsonPath('variance', 0);
+        $this->postJson('/api/cash-sessions/'.$id.'/close', $close)
+            ->assertOk()->assertJsonPath('close_reason', '0');
+        $this->postJson('/api/cash-sessions/'.$id.'/close', array_replace($close, ['reason' => null]))
+            ->assertConflict();
+
+        $this->assertDatabaseHas('cash_sessions', ['id' => $id, 'status' => 'closed', 'close_reason' => '0', 'counted_cash_cents' => 10000, 'variance_cents' => 0]);
+        $this->assertDatabaseCount('cash_sessions', 1);
+        $this->assertDatabaseCount('cash_adjustments', 0);
     }
 
     public function test_old_adjustment_replay_after_close_is_safe_but_new_movements_are_rejected(): void
