@@ -374,10 +374,11 @@ class PayMongoBillingService
             || ($attributes['currency'] ?? null) !== 'PHP' || ! is_int($attributes['paid_at'] ?? null)) {
             return null;
         }
-        $paidAt = CarbonImmutable::createFromTimestamp($attributes['paid_at'], config('app.timezone', 'UTC'));
-        if ($paidAt->lessThan($this->time($attempt->getRawOriginal('created_at'))->subMinutes(5)) || $paidAt->greaterThan($this->now()->addMinutes(5))) {
+        $timestamp = $attributes['paid_at'];
+        if ($timestamp < $this->time($attempt->getRawOriginal('created_at'))->subMinutes(5)->timestamp || $timestamp > $this->now()->addMinutes(5)->timestamp) {
             return null;
         }
+        $paidAt = CarbonImmutable::createFromTimestamp($timestamp, config('app.timezone', 'UTC'));
         $method = $attributes['source']['type'] ?? null;
         if (! is_string($method) || ! in_array($method, ['card', 'gcash', 'qrph'], true)
             || ! in_array($method, $attempt->checkout_payload['data']['attributes']['payment_method_types'] ?? [], true)) {

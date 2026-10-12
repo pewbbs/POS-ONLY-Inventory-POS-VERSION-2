@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\BillingInvoice;
+use App\Models\BillingPaymentAttempt;
 use App\Models\Location;
 use App\Models\Product;
 use App\Models\Stock;
@@ -455,5 +456,246 @@ class BillingTest extends TestCase
         $this->assertStringContainsString('simulation', $content);
         $this->assertStringNotContainsString($foreign->number, $content);
         $this->assertDatabaseCount('billing_invoices', 102);
+    }
+
+    public function test_simulation_cannot_replace_an_already_paid_subscription_period(): void
+    {
+        $this->freezeTime();
+        $owner = $this->owner();
+        $subscription = $this->activeSubscription($owner);
+        $invoice = BillingInvoice::factory()->create(['tenant_id' => $owner->tenant_id, 'subscription_id' => $subscription->id]);
+        $before = $subscription->refresh()->getRawOriginal();
+        Http::preventStrayRequests();
+
+        $this->actingAs($owner)->postJson('/api/billing/invoices/'.$invoice->id.'/simulate-payment', ['idempotency_key' => 'stale-open-invoice'])
+            ->assertUnprocessable()->assertJsonValidationErrors('subscription');
+
+        $this->assertSame($before, $subscription->refresh()->getRawOriginal());
+        $this->assertDatabaseHas('billing_invoices', ['id' => $invoice->id, 'status' => 'open', 'paid_at' => null, 'payment_key' => null]);
+        Http::assertNothingSent();
+    }
+
+    public function test_simulation_cannot_reverse_a_cancellation_by_paying_a_stale_open_invoice(): void
+    {
+        $this->freezeTime();
+        $owner = $this->owner();
+        $subscription = Subscription::factory()->create(['tenant_id' => $owner->tenant_id, 'cancel_at_period_end' => true]);
+        $invoice = BillingInvoice::factory()->create(['tenant_id' => $owner->tenant_id, 'subscription_id' => $subscription->id]);
+        $before = $subscription->refresh()->getRawOriginal();
+        Http::preventStrayRequests();
+
+        $this->actingAs($owner)->postJson('/api/billing/invoices/'.$invoice->id.'/simulate-payment', ['idempotency_key' => 'canceled-open-invoice'])
+            ->assertUnprocessable()->assertJsonValidationErrors('subscription');
+
+        $this->assertSame($before, $subscription->refresh()->getRawOriginal());
+        $this->assertDatabaseHas('billing_invoices', ['id' => $invoice->id, 'status' => 'open', 'paid_at' => null]);
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['creating'])]
+    #[TestWith(['pending'])]
+    #[TestWith(['unknown'])]
+    #[TestWith(['needs_review'])]
+    public function test_simulation_returns_422_while_hosted_payment_evidence_is_outstanding(string $status): void
+    {
+        $this->freezeTime();
+        $owner = $this->owner();
+        $subscription = Subscription::factory()->create(['tenant_id' => $owner->tenant_id]);
+        $invoice = BillingInvoice::factory()->create(['tenant_id' => $owner->tenant_id, 'subscription_id' => $subscription->id]);
+        $attempt = BillingPaymentAttempt::factory()->create(['billing_invoice_id' => $invoice->id, 'tenant_id' => $owner->tenant_id, 'status' => $status]);
+        $before = $attempt->refresh()->getRawOriginal();
+        Http::preventStrayRequests();
+
+        $this->actingAs($owner)->postJson('/api/billing/invoices/'.$invoice->id.'/simulate-payment', ['idempotency_key' => 'outstanding-hosted-payment'])
+            ->assertUnprocessable()->assertJsonValidationErrors('payment');
+
+        $this->assertSame($before, $attempt->refresh()->getRawOriginal());
+        $this->assertDatabaseHas('billing_invoices', ['id' => $invoice->id, 'status' => 'open', 'paid_at' => null]);
+        $this->assertDatabaseHas('subscriptions', ['id' => $subscription->id, 'status' => 'trialing', 'current_period_end' => null]);
+        Http::assertNothingSent();
+    }
+
+    public function test_simulation_returns_409_for_an_invoice_bound_to_another_subscription(): void
+    {
+        $this->freezeTime();
+        $owner = $this->owner();
+        $subscription = Subscription::factory()->create(['tenant_id' => $owner->tenant_id]);
+        $foreignSubscription = Subscription::factory()->create(['plan' => 'scale', 'billing_cycle' => 'annual']);
+        $invoice = BillingInvoice::factory()->create(['tenant_id' => $owner->tenant_id, 'subscription_id' => $foreignSubscription->id, 'plan' => 'scale', 'billing_cycle' => 'annual']);
+        $foreignBefore = $foreignSubscription->refresh()->getRawOriginal();
+        Http::preventStrayRequests();
+
+        $this->actingAs($owner)->postJson('/api/billing/invoices/'.$invoice->id.'/simulate-payment', ['idempotency_key' => 'mismatched-subscription'])
+            ->assertConflict();
+
+        $this->assertDatabaseHas('billing_invoices', ['id' => $invoice->id, 'status' => 'open', 'paid_at' => null]);
+        $this->assertDatabaseHas('subscriptions', ['id' => $subscription->id, 'plan' => 'grow', 'status' => 'trialing', 'current_period_end' => null]);
+        $this->assertSame($foreignBefore, $foreignSubscription->refresh()->getRawOriginal());
+        Http::assertNothingSent();
+    }
+
+    public function test_late_first_billing_visit_keeps_the_trial_anchored_to_company_registration(): void
+    {
+        $this->travelTo('2026-11-03 10:00:00');
+        $tenant = Tenant::factory()->create(['created_at' => '2026-10-12 10:00:00']);
+        $owner = User::factory()->create(['tenant_id' => $tenant->id, 'role' => 'admin']);
+        Http::preventStrayRequests();
+
+        $this->actingAs($owner)->getJson('/api/billing')->assertOk()
+            ->assertJsonPath('subscription.status', 'past_due')->assertJsonPath('subscription.can_write', false);
+        $this->travel(1)->days();
+        $response = $this->getJson('/api/billing')->assertOk()->assertJsonPath('subscription.can_write', false);
+
+        $this->assertStringStartsWith('2026-10-26T10:00:00', $response->json('subscription.trial_ends_at'));
+        $this->assertStringStartsWith('2026-11-02T10:00:00', $response->json('subscription.access_ends_at'));
+        $this->assertDatabaseCount('subscriptions', 1);
+        $this->assertDatabaseCount('billing_invoices', 1);
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['2026-10-26 09:59:59', 'trialing', true, 0])]
+    #[TestWith(['2026-10-26 10:00:00', 'past_due', true, 1])]
+    #[TestWith(['2026-11-02 09:59:59', 'past_due', true, 1])]
+    #[TestWith(['2026-11-02 10:00:00', 'past_due', false, 1])]
+    public function test_trial_and_grace_access_end_at_their_exact_boundaries(string $visitAt, string $status, bool $canWrite, int $invoices): void
+    {
+        $this->travelTo('2026-10-12 10:00:00');
+        $owner = $this->owner('starter');
+        $this->travelTo($visitAt);
+        Http::preventStrayRequests();
+
+        $response = $this->actingAs($owner)->getJson('/api/billing')->assertOk()
+            ->assertJsonPath('subscription.status', $status)->assertJsonPath('subscription.can_write', $canWrite);
+
+        $this->assertStringStartsWith('2026-10-26T10:00:00', $response->json('subscription.trial_ends_at'));
+        $this->assertStringStartsWith('2026-11-02T10:00:00', $response->json('subscription.access_ends_at'));
+        $this->assertDatabaseCount('billing_invoices', $invoices);
+        Http::assertNothingSent();
+    }
+
+    public function test_replacing_then_clearing_a_scheduled_plan_keeps_the_paid_period_and_invoices(): void
+    {
+        $this->freezeTime();
+        $owner = $this->owner();
+        $subscription = $this->activeSubscription($owner);
+        $invoice = BillingInvoice::factory()->create(['tenant_id' => $owner->tenant_id, 'subscription_id' => $subscription->id, 'status' => 'paid', 'payment_method' => 'simulation']);
+        $before = $invoice->refresh()->getRawOriginal();
+        Http::preventStrayRequests();
+
+        $this->actingAs($owner)->postJson('/api/billing/change-plan', ['plan' => 'starter', 'billing_cycle' => 'monthly'])->assertOk()->assertJsonPath('subscription.pending_plan', 'starter');
+        $this->postJson('/api/billing/change-plan', ['plan' => 'scale', 'billing_cycle' => 'annual'])->assertOk()
+            ->assertJsonPath('subscription.plan', 'grow')->assertJsonPath('subscription.pending_plan', 'scale')->assertJsonPath('subscription.pending_billing_cycle', 'annual');
+        $this->postJson('/api/billing/change-plan', ['plan' => 'grow', 'billing_cycle' => 'monthly'])->assertOk()
+            ->assertJsonPath('subscription.pending_plan', null)->assertJsonPath('subscription.pending_billing_cycle', null)
+            ->assertJsonPath('subscription.current_period_end', $subscription->current_period_end->toIso8601String());
+
+        $this->assertSame($before, $invoice->refresh()->getRawOriginal());
+        $this->assertDatabaseCount('billing_invoices', 1);
+        $this->assertSame('grow', $owner->tenant->fresh()->settings['plan']);
+        Http::assertNothingSent();
+    }
+
+    public function test_cancel_and_resume_clear_pending_changes_without_rewriting_paid_history_or_period(): void
+    {
+        $this->travelTo('2026-10-12 10:00:00');
+        $owner = $this->owner();
+        $subscription = Subscription::factory()->create([
+            'tenant_id' => $owner->tenant_id, 'status' => 'active', 'billing_cycle' => 'annual',
+            'current_period_start' => '2026-10-01 10:00:00', 'current_period_end' => '2027-10-01 10:00:00',
+            'pending_plan' => 'scale', 'pending_billing_cycle' => 'monthly',
+        ]);
+        $invoice = BillingInvoice::factory()->create([
+            'tenant_id' => $owner->tenant_id, 'subscription_id' => $subscription->id, 'status' => 'paid',
+            'billing_cycle' => 'annual', 'amount_cents' => 959040, 'payment_method' => 'simulation',
+            'paid_at' => '2026-10-01 10:00:00', 'period_start' => '2026-10-01 10:00:00', 'period_end' => '2027-10-01 10:00:00',
+        ]);
+        $before = $invoice->refresh()->getRawOriginal();
+        Http::preventStrayRequests();
+
+        $this->actingAs($owner)->postJson('/api/billing/cancel')->assertOk()->assertJsonPath('subscription.cancel_at_period_end', true)
+            ->assertJsonPath('subscription.pending_plan', null)->assertJsonPath('subscription.pending_billing_cycle', null);
+        $this->postJson('/api/billing/cancel')->assertOk();
+        $this->travel(1)->days();
+        $this->postJson('/api/billing/resume')->assertOk()->assertJsonPath('subscription.cancel_at_period_end', false)
+            ->assertJsonPath('subscription.can_write', true)->assertJsonPath('subscription.pending_plan', null);
+        $response = $this->postJson('/api/billing/resume')->assertOk();
+
+        $this->assertStringStartsWith('2027-10-01T10:00:00', $response->json('subscription.current_period_end'));
+        $this->assertSame($before, $invoice->refresh()->getRawOriginal());
+        $this->assertDatabaseCount('billing_invoices', 1);
+        Http::assertNothingSent();
+    }
+
+    public function test_renewal_scheduler_handles_mixed_companies_once_without_collecting_payments(): void
+    {
+        $this->travelTo('2026-10-12 10:00:00');
+        $futureTrial = Subscription::factory()->create();
+        $futurePaid = Subscription::factory()->create(['status' => 'active', 'current_period_start' => '2026-10-01 10:00:00', 'current_period_end' => '2026-11-01 10:00:00']);
+        $expiredTrial = Subscription::factory()->create(['trial_ends_at' => '2026-10-12 10:00:00']);
+        $duePaid = Subscription::factory()->create(['status' => 'active', 'current_period_start' => '2026-09-12 10:00:00', 'current_period_end' => '2026-10-12 10:00:00', 'pending_plan' => 'scale', 'pending_billing_cycle' => 'annual']);
+        $canceled = Subscription::factory()->create(['cancel_at_period_end' => true, 'trial_ends_at' => '2026-10-12 10:00:00']);
+        $pending = Subscription::factory()->create(['trial_ends_at' => '2026-10-11 10:00:00']);
+        $pendingInvoice = BillingInvoice::factory()->create(['tenant_id' => $pending->tenant_id, 'subscription_id' => $pending->id]);
+        $attempt = BillingPaymentAttempt::factory()->create(['tenant_id' => $pending->tenant_id, 'billing_invoice_id' => $pendingInvoice->id, 'status' => 'pending']);
+        $unchanged = [$futureTrial, $futurePaid, $pendingInvoice, $attempt];
+        $before = array_map(fn (Model $record): array => $record->refresh()->getRawOriginal(), $unchanged);
+        Http::preventStrayRequests();
+
+        $this->artisan('billing:process-renewals')->assertSuccessful();
+        $invoices = BillingInvoice::orderBy('id')->get()->map(fn (BillingInvoice $invoice): array => $invoice->getRawOriginal())->all();
+        $this->travel(1)->days();
+        $this->artisan('billing:process-renewals')->assertSuccessful();
+
+        $this->assertSame($invoices, BillingInvoice::orderBy('id')->get()->map(fn (BillingInvoice $invoice): array => $invoice->getRawOriginal())->all());
+        $this->assertDatabaseCount('billing_invoices', 3);
+        $this->assertDatabaseHas('billing_invoices', ['subscription_id' => $expiredTrial->id, 'status' => 'open', 'amount_cents' => 99900]);
+        $this->assertDatabaseHas('billing_invoices', ['subscription_id' => $duePaid->id, 'plan' => 'scale', 'billing_cycle' => 'annual', 'status' => 'open', 'amount_cents' => 1919040, 'paid_at' => null]);
+        $this->assertDatabaseHas('subscriptions', ['id' => $canceled->id, 'status' => 'canceled', 'current_period_end' => null]);
+        $this->assertDatabaseHas('subscriptions', ['id' => $pending->id, 'status' => 'past_due', 'current_period_end' => null]);
+        foreach ($unchanged as $index => $record) {
+            $this->assertSame($before[$index], $record->refresh()->getRawOriginal());
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_monthly_simulation_from_january_31_ends_on_february_28(): void
+    {
+        $this->travelTo('2026-01-31 10:00:00');
+        $owner = $this->owner('starter');
+        $invoice = $this->actingAs($owner)->postJson('/api/billing/checkout')->json('invoices.0.id');
+        Http::preventStrayRequests();
+
+        $response = $this->postJson('/api/billing/invoices/'.$invoice.'/simulate-payment', ['idempotency_key' => 'month-end-simulation'])->assertOk();
+
+        $this->assertStringStartsWith('2026-02-28T10:00:00', $response->json('subscription.current_period_end'));
+        $this->assertDatabaseHas('billing_invoices', ['id' => $invoice, 'status' => 'paid', 'period_start' => '2026-01-31 10:00:00', 'period_end' => '2026-02-28 10:00:00']);
+        Http::assertNothingSent();
+    }
+
+    public function test_original_paid_retry_remains_idempotent_while_a_later_renewal_checkout_is_outstanding(): void
+    {
+        $this->travelTo('2026-10-12 10:00:00');
+        $owner = $this->owner();
+        $invoice = $this->actingAs($owner)->postJson('/api/billing/checkout')->json('invoices.0.id');
+        $payment = ['idempotency_key' => 'original-paid-confirmation'];
+        $this->postJson('/api/billing/invoices/'.$invoice.'/simulate-payment', $payment)->assertOk();
+        $this->travelTo('2026-11-12 10:00:00');
+        $renewal = $this->getJson('/api/billing')->json('invoices.0.id');
+        $attempt = BillingPaymentAttempt::factory()->create(['tenant_id' => $owner->tenant_id, 'billing_invoice_id' => $renewal, 'status' => 'pending']);
+        $subscription = Subscription::where('tenant_id', $owner->tenant_id)->firstOrFail();
+        $paidInvoice = BillingInvoice::findOrFail($invoice);
+        $records = [$subscription, $paidInvoice, $attempt];
+        $before = array_map(fn (Model $record): array => $record->refresh()->getRawOriginal(), $records);
+        Http::preventStrayRequests();
+
+        $this->postJson('/api/billing/invoices/'.$invoice.'/simulate-payment', $payment)->assertOk()
+            ->assertJsonPath('subscription.status', 'past_due');
+
+        $this->assertDatabaseCount('billing_invoices', 2);
+        $this->assertDatabaseHas('billing_invoices', ['id' => $renewal, 'status' => 'open', 'paid_at' => null]);
+        foreach ($records as $index => $record) {
+            $this->assertSame($before[$index], $record->refresh()->getRawOriginal());
+        }
+        Http::assertNothingSent();
     }
 }

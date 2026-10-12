@@ -521,6 +521,8 @@ class PayMongoBillingServiceTest extends TestCase
             'noninteger payment time' => ['data.attributes.payments.0.attributes.paid_at', '1760000000'],
             'old payment time' => ['data.attributes.payments.0.attributes.paid_at', 1],
             'future payment time' => ['data.attributes.payments.0.attributes.paid_at', 4000000000],
+            'maximum integer payment time' => ['data.attributes.payments.0.attributes.paid_at', PHP_INT_MAX],
+            'minimum integer payment time' => ['data.attributes.payments.0.attributes.paid_at', PHP_INT_MIN],
             'unsupported payment method' => ['data.attributes.payments.0.attributes.source.type', 'bank_transfer'],
         ];
     }

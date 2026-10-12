@@ -455,6 +455,33 @@ class PayMongoBillingEndpointTest extends TestCase
         $this->assertDatabaseCount('billing_payment_attempts', 1);
     }
 
+    public function test_out_of_range_provider_payment_time_keeps_recheck_available_without_changing_subscription_or_invoice(): void
+    {
+        $this->configurePayMongo();
+        $this->freezeSecond();
+        $store = $this->billing();
+        $attempt = $this->unresolvedAttempt($store['invoice']);
+        $attempt->update(['status' => 'pending', 'session_id' => 'cs_endpoint']);
+        $invoiceBefore = $store['invoice']->refresh()->getAttributes();
+        $subscriptionBefore = $store['subscription']->refresh()->getAttributes();
+        $resource = $this->pendingSession($attempt->reference);
+        $resource['data']['attributes']['payments'] = [['id' => 'pay_invalid_time', 'type' => 'payment', 'attributes' => [
+            'status' => 'paid', 'livemode' => false, 'amount' => 99900, 'currency' => 'PHP',
+            'paid_at' => PHP_INT_MAX, 'source' => ['type' => 'card'], 'refunds' => [],
+        ]]];
+        Http::fake(['https://api.paymongo.com/v1/checkout_sessions/cs_endpoint' => Http::response($resource)]);
+
+        $this->actingAs($store['user'])->postJson('/api/billing/invoices/'.$store['invoice']->id.'/paymongo-recheck')
+            ->assertOk()->assertJsonPath('attempt.status', 'unknown')->assertJsonPath('checkout_url', null)
+            ->assertJsonPath('billing.invoices.0.status', 'open');
+
+        $this->assertSame($invoiceBefore, $store['invoice']->refresh()->getAttributes());
+        $this->assertSame($subscriptionBefore, $store['subscription']->refresh()->getAttributes());
+        $this->assertDatabaseHas('billing_payment_attempts', ['id' => $attempt->id, 'session_id' => 'cs_endpoint', 'payment_id' => null, 'confirmed_at' => null]);
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET');
+    }
+
     public function test_invoice_csv_covers_older_history_and_uses_verified_payment_references_instead_of_a_newer_failed_attempt(): void
     {
         $this->configurePayMongo();

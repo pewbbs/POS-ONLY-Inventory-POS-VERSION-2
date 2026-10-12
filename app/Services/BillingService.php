@@ -294,9 +294,9 @@ class BillingService
 
                 return;
             }
-            abort_unless($invoice->status === 'open', 409, 'This invoice is no longer payable. Refresh Billing.');
+            $this->assertInvoicePayable($tenant, $invoice);
+            $this->assertNoOutstandingCheckout($subscription);
             abort_if(BillingInvoice::where('tenant_id', $tenant->id)->where('payment_key', $key)->exists(), 409, 'This payment key was already used for another invoice.');
-            $this->checkPlanFits($tenant, $invoice->plan);
             $this->activateInvoice($invoice, $subscription, $tenant, now(), 'simulation', $key, $actor->id, 'simulation', 'simulation');
         });
     }
