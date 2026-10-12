@@ -29,9 +29,8 @@ class WorkspaceController extends Controller
     {
         $allowed = ['overview', 'dashboard', 'pos', 'inventory', 'orders', 'customers', 'reports', 'team', 'settings', 'guide', 'sales', 'purchases', 'activity', 'billing', 'channels', 'monitoring'];
         abort_if($section && ! in_array($section, $allowed, true), 404);
-        abort_if($section === 'billing' && $request->user()->role !== 'admin', 403);
-        abort_if($section === 'monitoring' && $request->user()->role !== 'admin', 403);
-        abort_if($section === 'channels' && ! in_array($request->user()->role, ['admin', 'manager'], true), 403);
+        abort_if(in_array($section, ['team', 'settings', 'activity', 'billing', 'monitoring'], true) && $request->user()->role !== 'admin', 403);
+        abort_if(in_array($section, ['purchases', 'orders', 'channels'], true) && ! in_array($request->user()->role, ['admin', 'manager'], true), 403);
 
         return view('workspace', ['section' => $section ?? 'dashboard', 'user' => $request->user()]);
     }

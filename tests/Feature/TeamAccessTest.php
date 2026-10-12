@@ -2,11 +2,16 @@
 
 namespace Tests\Feature;
 
+use App\Http\Middleware\RequireRole;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
+use Closure;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\TestWith;
+use Symfony\Component\HttpFoundation\Response;
 use Tests\TestCase;
 
 class TeamAccessTest extends TestCase
@@ -20,6 +25,29 @@ class TeamAccessTest extends TestCase
         $member = User::factory()->create(['tenant_id' => $tenant->id, 'role' => 'cashier']);
 
         return compact('tenant', 'admin', 'member');
+    }
+
+    /**
+     * @param  array{role?: string, is_active?: bool}  $attributes
+     */
+    private function changeAccessAfterRoleCheck(User $actor, array $attributes): void
+    {
+        $this->app->instance(RequireRole::class, new class($actor->id, $attributes) extends RequireRole
+        {
+            /**
+             * @param  array{role?: string, is_active?: bool}  $attributes
+             */
+            public function __construct(private int $actorId, private array $attributes) {}
+
+            public function handle(Request $request, Closure $next, string ...$roles): Response
+            {
+                return parent::handle($request, function (Request $request) use ($next): Response {
+                    User::whereKey($this->actorId)->update($this->attributes);
+
+                    return $next($request);
+                }, ...$roles);
+            }
+        });
     }
 
     public function test_team_changes_require_authentication_as_401(): void
@@ -58,6 +86,61 @@ class TeamAccessTest extends TestCase
         $this->assertNotSame($rememberToken, $member->remember_token);
         $this->actingAs($member)->getJson('/api/bootstrap')->assertForbidden()->assertJsonPath('message', 'Your workspace access is paused. Ask an administrator to reactivate your account.');
         $this->assertGuest();
+    }
+
+    public function test_paused_member_with_a_cached_identity_cannot_read_sales_as_403(): void
+    {
+        Http::preventStrayRequests();
+        $team = $this->team();
+        $this->actingAs($team['member']);
+        User::whereKey($team['member']->id)->update(['is_active' => false]);
+
+        $this->getJson('/api/sales')->assertForbidden()
+            ->assertJsonPath('message', 'Your workspace access is paused. Ask an administrator to reactivate your account.');
+
+        $this->assertGuest();
+        Http::assertNothingSent();
+    }
+
+    public function test_deleted_member_with_a_cached_identity_cannot_read_sales_as_403(): void
+    {
+        Http::preventStrayRequests();
+        $team = $this->team();
+        $this->actingAs($team['member']);
+        $team['member']->delete();
+
+        $this->getJson('/api/sales')->assertForbidden()
+            ->assertJsonPath('message', 'Your account has no active workspace.');
+
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['manager'])]
+    #[TestWith(['cashier'])]
+    public function test_demoted_administrator_with_a_cached_identity_cannot_read_activity_as_403(string $role): void
+    {
+        Http::preventStrayRequests();
+        $team = $this->team();
+        $this->actingAs($team['admin']);
+        User::whereKey($team['admin']->id)->update(['role' => $role]);
+
+        $this->getJson('/api/activity')->assertForbidden()
+            ->assertJsonPath('message', 'Your role does not have access to this action.');
+
+        Http::assertNothingSent();
+    }
+
+    public function test_bootstrap_uses_a_demoted_cashiers_current_role_and_redactions(): void
+    {
+        Http::preventStrayRequests();
+        $team = $this->team();
+        $this->actingAs($team['admin']);
+        User::whereKey($team['admin']->id)->update(['role' => 'cashier']);
+
+        $this->getJson('/api/bootstrap')->assertOk()->assertJsonPath('user.role', 'cashier')
+            ->assertJsonPath('team', [])->assertJsonPath('stats.inventory_value', null);
+
+        Http::assertNothingSent();
     }
 
     public function test_administrator_can_reactivate_a_paused_member(): void
@@ -127,7 +210,7 @@ class TeamAccessTest extends TestCase
     public function test_access_changed_during_a_request_is_rechecked_before_updating_a_member_as_403(): void
     {
         $team = $this->team();
-        User::whereKey($team['admin']->id)->update(['role' => 'cashier']);
+        $this->changeAccessAfterRoleCheck($team['admin'], ['role' => 'cashier']);
         $this->actingAs($team['admin'])->patchJson('/api/team/'.$team['member']->id, ['role' => 'admin'])->assertForbidden();
         $this->assertDatabaseHas('users', ['id' => $team['member']->id, 'role' => 'cashier']);
     }
@@ -141,7 +224,7 @@ class TeamAccessTest extends TestCase
         $team = $this->team();
         $subscription = Subscription::factory()->create(['tenant_id' => $team['tenant']->id]);
         $subscriptionBefore = $subscription->fresh()->getAttributes();
-        User::whereKey($team['admin']->id)->update([$field => $value]);
+        $this->changeAccessAfterRoleCheck($team['admin'], [$field => $value]);
 
         $this->actingAs($team['admin'])->postJson('/api/team', [
             'name' => 'New cashier', 'email' => 'new-cashier@example.test',

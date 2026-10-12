@@ -11,8 +11,10 @@ class EnsureTenantAccess
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $user = $request->user();
-        if ($user && ! $user->is_active) {
+        $user = $request->user()?->fresh();
+        abort_unless($user, 403, 'Your account has no active workspace.');
+        Auth::guard('web')->setUser($user);
+        if (! $user->is_active) {
             Auth::logout();
             $request->session()->invalidate();
             $request->session()->regenerateToken();
