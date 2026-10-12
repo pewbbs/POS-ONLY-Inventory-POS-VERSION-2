@@ -71,7 +71,7 @@ class InventoryService
         $priceTier = $data['price_tier'] ?? 'retail';
         $canonical = [
             'cashier_id' => $user->id,
-            'location_id' => (int) $data['location_id'], 'customer_id' => empty($data['customer_id']) ? null : (int) $data['customer_id'],
+            'location_id' => (int) $data['location_id'], 'customer_id' => isset($data['customer_id']) ? (int) $data['customer_id'] : null,
             'items' => array_map(fn (array $item): array => ['product_id' => (int) $item['product_id'], 'quantity' => (int) $item['quantity']], $data['items']),
             'discount' => (int) round((float) ($data['discount_percent'] ?? 0) * 100),
             'tax' => isset($data['tax_percent']) ? (int) round((float) $data['tax_percent'] * 100) : null,
@@ -92,7 +92,7 @@ class InventoryService
                 return $existing->load(['cashier', 'returns.actor']);
             }
             Location::where('tenant_id', $user->tenant_id)->findOrFail($data['location_id']);
-            if (! empty($data['customer_id'])) {
+            if (isset($data['customer_id'])) {
                 Customer::where('tenant_id', $user->tenant_id)->findOrFail($data['customer_id']);
             }
             $taxPercent = $tenant->settings['tax_percent'] ?? 0;

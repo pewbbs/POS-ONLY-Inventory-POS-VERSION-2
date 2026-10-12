@@ -2498,10 +2498,16 @@
                 const payload = {idempotency_key: form.dataset.key, quantity: number(data.quantity), ...(adjustment ? {location_id: number(form.dataset.location), reason: data.reason} : {product_id: number(form.dataset.id), from_location_id: number(form.dataset.location), to_location_id: number(data.to_location_id)})};
                 await saveRecordAction(form, adjustment ? `/products/${form.dataset.id}/adjust` : '/transfers', payload, adjustment ? 'Stock adjustment' : 'Stock transfer'); break;
             }
-            case 'customer':
+            case 'customer': {
+                const owner = `${state.data.tenant.id}:${state.data.user.id}`;
                 result = await save(form, '/customers', 'POST', data, 'Customer added.');
-                if (result && state.section === 'pos') { state.customer = String(result.id || result.customer?.id || ''); renderSection(); }
+                if (result && owner === `${state.data.tenant.id}:${state.data.user.id}`) {
+                    if (!state.data.customers.some(customer => number(customer.id) === number(result.id))) { state.data.customers.push(result); }
+                    if (state.section === 'pos') { state.customer = String(result.id); }
+                    if (['pos', 'customers'].includes(state.section)) { renderSection(); }
+                }
                 break;
+            }
             case 'payment': {
                 if (state.pendingSale) { await completePayment(form, state.pendingSale); break; }
                 const total = cartTotals().total;
@@ -2558,7 +2564,15 @@
                 await saveRecordAction(form, '/purchase-orders', {supplier_id: number(data.supplier_id), location_id: number(data.location_id), status: data.status || 'ordered', items, idempotency_key: form.dataset.key}, 'Purchase order creation');
                 break;
             }
-            case 'supplier': result = await save(form, '/suppliers', 'POST', data, 'Supplier added.'); if (result && form.dataset.next === 'purchase') { createOrderModal(); } break;
+            case 'supplier': {
+                const owner = `${state.data.tenant.id}:${state.data.user.id}`;
+                result = await save(form, '/suppliers', 'POST', data, 'Supplier added.');
+                if (result && owner === `${state.data.tenant.id}:${state.data.user.id}` && canManage()) {
+                    if (!state.data.suppliers.some(supplier => number(supplier.id) === number(result.id))) { state.data.suppliers.push(result); }
+                    if (form.dataset.next === 'purchase') { createOrderModal(); }
+                }
+                break;
+            }
             case 'receive':
             case 'return': {
                 const items = [...form.querySelectorAll('[data-product-id]')].map(input => ({product_id: number(input.dataset.productId), quantity: number(input.value)})).filter(item => item.quantity > 0);
