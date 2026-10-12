@@ -2,15 +2,19 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\CheckLowStock;
 use App\Models\BillingInvoice;
 use App\Models\Location;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SaleReturn;
+use App\Models\Stock;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\TestWith;
 use Tests\TestCase;
@@ -200,6 +204,71 @@ class FinancialReportEndpointTest extends TestCase
         $this->assertSame('10010.00', $sections['Sales, credit notes and net'][1][4]);
         $this->assertCount(3, $sections['Daily']);
         $this->assertSame('5010.00', $sections['Daily'][1][3]);
+    }
+
+    public function test_checkout_partial_then_full_returns_reconcile_exact_cents_and_csv_without_counting_retries(): void
+    {
+        Http::preventStrayRequests();
+        Queue::fake([CheckLowStock::class]);
+        $store = $this->store();
+        $store['product']->update(['price_cents' => 101, 'cost_cents' => 40]);
+        $second = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'price_cents' => 203, 'cost_cents' => 70]);
+        foreach ([$store['product'], $second] as $product) {
+            Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'location_id' => $store['location']->id, 'product_id' => $product->id, 'quantity' => 10]);
+        }
+        $this->travelTo(now()->setDate(2026, 10, 1)->setTime(9, 30));
+        $checkout = [
+            'location_id' => $store['location']->id,
+            'items' => [['product_id' => $store['product']->id, 'quantity' => 3], ['product_id' => $second->id, 'quantity' => 2]],
+            'discount_percent' => 17, 'tax_percent' => 12,
+            'payments' => [['method' => 'cash', 'amount' => 6], ['method' => 'card', 'amount' => 1]],
+            'idempotency_key' => 'finance-ledger-checkout',
+        ];
+
+        $saleId = $this->actingAs($store['user'])->postJson('/api/sales', $checkout)->assertCreated()
+            ->assertJsonPath('subtotal', 7.09)->assertJsonPath('discount', 1.21)->assertJsonPath('tax', 0.71)
+            ->assertJsonPath('total', 6.59)->assertJsonPath('change', 0.41)->json('id');
+        $this->postJson('/api/sales', $checkout)->assertCreated()->assertJsonPath('id', $saleId);
+        $this->travelTo(now()->setDate(2026, 10, 11)->setTime(10, 0));
+        $partial = ['items' => [['product_id' => $store['product']->id, 'quantity' => 1]], 'reason' => 'One item returned', 'idempotency_key' => 'finance-ledger-partial'];
+        $this->postJson('/api/sales/'.$saleId.'/return', $partial)->assertOk()->assertJsonPath('returned_amount', 0.94)->assertJsonPath('net_total', 5.65);
+        $this->postJson('/api/sales/'.$saleId.'/return', $partial)->assertOk()->assertJsonPath('returned_amount', 0.94);
+        $cohort = '/api/reports/financial?from=2026-10-01&to=2026-10-01&basis=sale_cohort';
+        $this->getJson($cohort)->assertOk()
+            ->assertJsonPath('summary.sales_count', 1)->assertJsonPath('summary.refund_count', 1)
+            ->assertJsonPath('refunds.subtotal', 1.01)->assertJsonPath('refunds.discount', 0.17)->assertJsonPath('refunds.tax', 0.1)
+            ->assertJsonPath('net.total', 5.65)->assertJsonPath('net.revenue_ex_tax', 5.04)->assertJsonPath('net.tax', 0.61)
+            ->assertJsonPath('costs.sales_cost', 2.6)->assertJsonPath('costs.returned_cost', 0.4)
+            ->assertJsonPath('costs.net_cost', 2.2)->assertJsonPath('costs.estimated_gross_margin', 2.84)
+            ->assertJsonPath('tenders.0.method', 'card')->assertJsonPath('tenders.0.accepted', 1)
+            ->assertJsonPath('tenders.1.method', 'cash')->assertJsonPath('tenders.1.change', 0.41)->assertJsonPath('tenders.1.accepted', 5.59);
+        $store['product']->update(['cost_cents' => 99999, 'price_cents' => 99999]);
+        $second->update(['cost_cents' => 99999, 'price_cents' => 99999]);
+        $this->travelTo(now()->setDate(2026, 10, 12)->setTime(10, 0));
+        $full = ['reason' => 'Return all remaining items', 'idempotency_key' => 'finance-ledger-full'];
+        $this->postJson('/api/sales/'.$saleId.'/return', $full)->assertOk()->assertJsonPath('status', 'returned')->assertJsonPath('returned_amount', 6.59)->assertJsonPath('net_total', 0);
+        $this->postJson('/api/sales/'.$saleId.'/return', $full)->assertOk()->assertJsonPath('returned_amount', 6.59);
+
+        $this->getJson('/api/reports/financial?from=2026-10-12&to=2026-10-12')->assertOk()
+            ->assertJsonPath('summary.sales_count', 0)->assertJsonPath('summary.refund_count', 1)
+            ->assertJsonPath('refunds.subtotal', 6.08)->assertJsonPath('refunds.discount', 1.04)->assertJsonPath('refunds.tax', 0.61)
+            ->assertJsonPath('net.total', -5.65)->assertJsonPath('net.revenue_ex_tax', -5.04)
+            ->assertJsonPath('costs.returned_cost', 2.2)->assertJsonPath('costs.estimated_gross_margin', -2.84);
+        $this->getJson($cohort)->assertOk()->assertJsonPath('summary.refund_count', 2)->assertJsonPath('summary.legacy_refund_count', 0)
+            ->assertJsonPath('net.subtotal', 0)->assertJsonPath('net.discount', 0)->assertJsonPath('net.tax', 0)->assertJsonPath('net.total', 0)
+            ->assertJsonPath('costs.net_cost', 0)->assertJsonPath('costs.estimated_gross_margin', 0)
+            ->assertJsonPath('coverage.unreconciled_tender_sales', 0);
+        $sections = $this->csvSections($this->getJson('/api/reports/financial/export?from=2026-10-01&to=2026-10-01&basis=sale_cohort')->assertOk()->streamedContent());
+        $this->assertSame(['sales', '7.09', '1.21', '0.71', '6.59', '5.88'], $sections['Sales, credit notes and net'][1]);
+        $this->assertSame(['refunds', '7.09', '1.21', '0.71', '6.59', '5.88'], $sections['Sales, credit notes and net'][2]);
+        $this->assertSame(['net', '0.00', '0.00', '0.00', '0.00', '0.00'], $sections['Sales, credit notes and net'][3]);
+        $this->assertDatabaseCount('sales', 1);
+        $this->assertDatabaseCount('sale_returns', 2);
+        foreach ([$store['product'], $second] as $product) {
+            $this->assertDatabaseHas('stocks', ['product_id' => $product->id, 'location_id' => $store['location']->id, 'quantity' => 10]);
+        }
+        Queue::assertPushed(CheckLowStock::class, fn (CheckLowStock $job): bool => $job->tenantId === $store['tenant']->id);
+        Http::assertNothingSent();
     }
 
     public function test_manila_boundaries_include_local_midnight_sales_and_independent_returns_with_utc_storage(): void

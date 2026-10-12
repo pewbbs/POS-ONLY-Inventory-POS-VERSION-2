@@ -2,13 +2,16 @@
 
 namespace Tests\Feature;
 
+use App\Models\CommerceChannel;
 use App\Models\Location;
 use App\Models\Product;
 use App\Models\Sale;
+use App\Models\Stock;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\TestWith;
 use Tests\TestCase;
@@ -170,6 +173,68 @@ class SalesAnalyticsEndpointTest extends TestCase
         } finally {
             date_default_timezone_set($previousTimezone);
         }
+    }
+
+    public function test_pos_and_channel_checkout_reports_keep_original_amounts_after_later_returns(): void
+    {
+        Http::preventStrayRequests();
+        config(['commerce.simulations_enabled' => true]);
+        $this->travelTo(now()->setDate(2026, 10, 10)->setTime(9, 15));
+        $store = $this->store();
+        $store['tenant']->update(['settings' => array_replace(Tenant::defaultSettings(), ['tax_percent' => 12])]);
+        $store['product']->update(['price_cents' => 45000, 'reorder_level' => 1]);
+        $second = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'price_cents' => 10000, 'reorder_level' => 1]);
+        $firstStock = Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'location_id' => $store['location']->id, 'product_id' => $store['product']->id, 'quantity' => 10]);
+        $secondStock = Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'location_id' => $store['location']->id, 'product_id' => $second->id, 'quantity' => 10]);
+        $channel = CommerceChannel::factory()->create(['tenant_id' => $store['tenant']->id, 'location_id' => $store['location']->id, 'user_id' => $store['user']->id]);
+        $posSale = $this->actingAs($store['user'])->postJson('/api/sales', [
+            'location_id' => $store['location']->id,
+            'items' => [['product_id' => $store['product']->id, 'quantity' => 3], ['product_id' => $second->id, 'quantity' => 2]],
+            'discount_percent' => 10, 'tax_percent' => 12, 'payments' => [['method' => 'cash', 'amount' => 2000]],
+            'idempotency_key' => 'analytics-e2e-pos-sale',
+        ])->assertCreated()->assertJsonPath('total', 1562.4)->json('id');
+        $this->travelTo(now()->setTime(17, 20));
+        $order = $this->postJson('/api/commerce/channels/'.$channel->id.'/orders', [
+            'external_reference' => 'ANALYTICS-E2E-WEB', 'idempotency_key' => 'analytics-e2e-channel-order',
+            'items' => [['sku' => $store['product']->sku, 'quantity' => 2]],
+        ])->assertCreated()->json('id');
+        $channelSale = $this->postJson('/api/commerce/orders/'.$order.'/import')->assertOk()->json('sale_id');
+        $store['product']->update(['price_cents' => 99000]);
+        $store['tenant']->update(['settings' => array_replace($store['tenant']->settings, ['tax_percent' => 25])]);
+        $this->travelTo(now()->setDate(2026, 10, 11)->setTime(12, 0));
+        foreach ([$posSale => 'analytics-e2e-pos-return', $channelSale => 'analytics-e2e-channel-return'] as $saleId => $key) {
+            $this->postJson('/api/sales/'.$saleId.'/return', [
+                'items' => [['product_id' => $store['product']->id, 'quantity' => 1]],
+                'reason' => 'One original item returned', 'idempotency_key' => $key,
+            ])->assertOk();
+        }
+        $filters = http_build_query(['from' => '2026-10-10', 'to' => '2026-10-10', 'location_id' => $store['location']->id]);
+
+        $this->getJson('/api/reports/analytics?'.$filters)->assertOk()
+            ->assertJsonPath('summary.transactions', 2)->assertJsonPath('summary.gross_total', 2570.4)
+            ->assertJsonPath('summary.returned_total', 957.6)->assertJsonPath('summary.net_total', 1612.8)
+            ->assertJsonPath('summary.units_sold', 7)->assertJsonPath('summary.units_returned', 2)->assertJsonPath('summary.net_units', 5)
+            ->assertJsonPath('summary.returned_transactions', 2)->assertJsonPath('summary.simulated_transactions', 1)
+            ->assertJsonPath('summary.average_basket', 806.4)->assertJsonPath('peak_hours', [9, 17])
+            ->assertJsonPath('hourly.9.net_total', 1108.8)->assertJsonPath('hourly.17.net_total', 504)
+            ->assertJsonPath('best_sellers.0.product_id', $store['product']->id)->assertJsonPath('best_sellers.0.net_total', 1411.2)
+            ->assertJsonPath('best_sellers.0.net_units', 3)->assertJsonPath('best_sellers.1.net_total', 201.6);
+        $this->getJson('/api/reports/analytics?'.$filters.'&source=pos')->assertOk()
+            ->assertJsonPath('summary.transactions', 1)->assertJsonPath('summary.net_total', 1108.8)->assertJsonPath('peak_hours', [9]);
+        $this->getJson('/api/reports/analytics?'.$filters.'&source=channel')->assertOk()
+            ->assertJsonPath('summary.transactions', 1)->assertJsonPath('summary.net_total', 504)->assertJsonPath('peak_hours', [17]);
+        $this->getJson('/api/reports/analytics?from=2026-10-11&to=2026-10-11')->assertOk()->assertJsonPath('summary.transactions', 0);
+        $csv = $this->get('/api/reports/export?'.$filters)->assertOk()->streamedContent();
+        $rows = array_map(fn (string $line): array => str_getcsv($line, ',', '"', ''), explode("\n", trim($csv)));
+
+        $this->assertCount(3, $rows);
+        $this->assertSame(['504', '1108.8'], array_column(array_slice($rows, 1), 9));
+        $this->assertSame(['channel', 'pos'], array_column(array_slice($rows, 1), 11));
+        $this->assertDatabaseHas('stocks', ['id' => $firstStock->id, 'quantity' => 7, 'reserved_quantity' => 0]);
+        $this->assertDatabaseHas('stocks', ['id' => $secondStock->id, 'quantity' => 8]);
+        $this->assertDatabaseCount('sales', 2);
+        $this->assertDatabaseCount('sale_returns', 2);
+        Http::assertNothingSent();
     }
 
     public static function invalidFilters(): array

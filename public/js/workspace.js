@@ -2627,11 +2627,11 @@
             } else if (state.section === 'billing') {
                 if (!state.billingLoading && !state.billingBusy) { await loadBilling(true); }
             } else if (state.section === 'reports' && state.reportView === 'financial') {
-                if (!state.financialLoading) { await loadFinancial(state.financialFilters || initializeFinancialFilters(), true); }
+                if (!state.financialLoading && !state.financialError) { await loadFinancial(state.financialFilters || initializeFinancialFilters(), true); }
             } else {
                 await refresh();
                 if (state.section === 'channels') { await loadCommerce(); }
-                if (state.section === 'reports' && state.reportView === 'analytics' && !state.analyticsLoading) { await loadAnalytics(state.analyticsFilters || initializeReportFilters(), true); }
+                if (state.section === 'reports' && state.reportView === 'analytics' && !state.analyticsLoading && !state.analyticsError) { await loadAnalytics(state.analyticsFilters || initializeReportFilters(), true); }
             }
         }
         catch { document.getElementById('connection-label').textContent = 'Sync paused · check your connection'; document.querySelector('.workspace-status').classList.add('offline'); }
