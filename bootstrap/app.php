@@ -4,7 +4,10 @@ use App\Http\Middleware\AuditSuccessfulMutation;
 use App\Http\Middleware\DeveloperSession;
 use App\Http\Middleware\EnsureSubscriptionAccess;
 use App\Http\Middleware\EnsureTenantAccess;
+use App\Http\Middleware\MobileApiTransport;
 use App\Http\Middleware\RequireDeveloper;
+use App\Http\Middleware\RequireMobileIdempotencyKey;
+use App\Http\Middleware\RequireMobileToken;
 use App\Http\Middleware\RequireRole;
 use App\Http\Middleware\SeoHeaders;
 use App\Services\MonitoringService;
@@ -15,19 +18,24 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Laravel\Sanctum\Http\Middleware\CheckAbilities;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
+        api: __DIR__.'/../routes/api.php',
+        apiPrefix: 'api/v1',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(DeveloperSession::class);
         $middleware->prepend(SeoHeaders::class);
-        $middleware->alias(['role' => RequireRole::class, 'tenant' => EnsureTenantAccess::class, 'audit' => AuditSuccessfulMutation::class, 'subscribed' => EnsureSubscriptionAccess::class, 'developer' => RequireDeveloper::class]);
+        $middleware->alias(['role' => RequireRole::class, 'tenant' => EnsureTenantAccess::class, 'audit' => AuditSuccessfulMutation::class, 'subscribed' => EnsureSubscriptionAccess::class, 'developer' => RequireDeveloper::class,
+            'mobile.transport' => MobileApiTransport::class, 'mobile.token' => RequireMobileToken::class,
+            'mobile.idempotency' => RequireMobileIdempotencyKey::class, 'abilities' => CheckAbilities::class]);
         $middleware->redirectGuestsTo(fn (Request $request): string => $request->is('developer', 'developer/*', 'api/developer', 'api/developer/*') ? '/developer/login' : '/login');
         $middleware->redirectUsersTo(fn (Request $request): string => $request->is('developer', 'developer/*', 'api/developer', 'api/developer/*')
             ? route('developer', ['section' => 'overview'])
@@ -38,9 +46,10 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->dontReportDuplicates();
         $exceptions->respond(function (Response $response): Response {
             $response = app(SeoService::class)->applyHeaders(request(), $response);
-            if (request()->is('developer', 'developer/*', 'api/developer', 'api/developer/*', 'auth/*', 'account/connections', 'account/connections/*')) {
+            if (request()->is('developer', 'developer/*', 'api/developer', 'api/developer/*', 'api/v1', 'api/v1/*', 'api/offline/*', 'auth/*', 'account/connections', 'account/connections/*')) {
                 $response->headers->set('Cache-Control', 'no-store, private');
                 $response->headers->set('Referrer-Policy', 'no-referrer');
+                $response->headers->set('X-Content-Type-Options', 'nosniff');
             }
 
             return $response;
@@ -59,6 +68,16 @@ return Application::configure(basePath: dirname(__DIR__))
             }
         });
         $exceptions->render(function (Throwable $exception, Request $request) {
+            if ($request->is('api/v1', 'api/v1/*', 'api/offline/*')) {
+                if ($exception instanceof HttpExceptionInterface && $exception->getStatusCode() >= 500) {
+                    return response()->json(['message' => 'The API is temporarily unavailable. Try again using the same request key.'], $exception->getStatusCode(), $exception->getHeaders());
+                }
+                if (! $exception instanceof HttpExceptionInterface
+                    && ! $exception instanceof AuthenticationException
+                    && ! $exception instanceof ValidationException) {
+                    return response()->json(['message' => 'The API is temporarily unavailable. Try again using the same request key.'], 503);
+                }
+            }
             if ($request->is('api/developer', 'api/developer/*')
                 && ! $exception instanceof HttpExceptionInterface
                 && ! $exception instanceof AuthenticationException

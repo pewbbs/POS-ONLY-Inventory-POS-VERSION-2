@@ -33,7 +33,7 @@ return [
             'questions' => [
                 ['question' => 'Who can use POSONLY inventory management?', 'answer' => 'Retail stores, boutiques, convenience stores, wholesalers and other small businesses that sell countable products can manage stock and sales together. Cafés can track sellable items; ingredient recipes and recipe-based stock deductions are not included.'],
                 ['question' => 'Does POSONLY connect to online marketplaces?', 'answer' => 'Live Shopify, WooCommerce and marketplace connectors are not available in the current production service. Channel synchronization can be explored with simulated integrations in local testing. Physical stores and warehouses use the same company inventory records.'],
-                ['question' => 'Can inventory be managed offline?', 'answer' => 'A current browser and reliable internet connection are required. Offline stock edits and offline sales are not supported.'],
+                ['question' => 'Can inventory be managed offline?', 'answer' => 'Enable Offline mode on a trusted device while connected to save a 24-hour catalog and queue walk-in cash sales. The server checks stock and the original quote when syncing. Offline stock edits are not supported.'],
             ],
         ],
         'pos' => [
@@ -66,7 +66,7 @@ return [
             'example' => 'A customer buys a ₱450 tote and a ₱320 mug. For this example, no discount or tax is added. You record ₱500 cash and ₱270 from a payment already completed on a separate wallet service. POSONLY saves the ₱770 sale and deducts one of each product from the selected store.',
             'questions' => [
                 ['question' => 'What hardware do I need for POSONLY?', 'answer' => 'Start with a computer or tablet, a current browser and a reliable connection. A scanner in keyboard mode can enter saved barcodes. Printing uses your operating-system driver and browser print dialog. Use a separate approved card terminal; automatic cash-drawer control is not included.'],
-                ['question' => 'What happens if the connection drops during checkout?', 'answer' => 'Keep the original tab and use Check sale status after reconnecting. This checks the original transaction before you try again. Do not recreate an uncertain sale or charge a customer a second time. Offline checkout is not supported.'],
+                ['question' => 'What happens if the connection drops during checkout?', 'answer' => 'Keep the original tab and use Check sale status after reconnecting. This checks the original transaction before you try again. Do not recreate an uncertain sale or charge a customer a second time. The separate saved POS can queue cash sales after Offline mode is enabled. Keep uncertain online checkouts separate from that queue.'],
                 ['question' => 'Is POSONLY BIR-certified accounting software?', 'answer' => 'POSONLY provides operational sales and stock reports. It does not claim BIR certification or replace your accounting system. Confirm your business’s tax, receipt and recordkeeping requirements with the appropriate adviser before using it for statutory reporting.'],
             ],
         ],
@@ -88,7 +88,7 @@ return [
                     'items' => ['Cashiers use point of sale for sales and receipts.', 'Managers maintain products, stock, deliveries and reports.', 'Administrators manage settings, team access and subscription records.'],
                     'guide' => 'team', 'guide_label' => 'Compare staff responsibilities'],
                 ['id' => 'service', 'title' => 'What to expect from the current service.',
-                    'text' => 'Use POSONLY in a current browser with a reliable internet connection. Customer payment methods are recorded in the POS; customer card and wallet charges use a separate payment service. The production service does not currently offer live marketplace connectors, offline checkout or ingredient-recipe management.',
+                    'text' => 'Use POSONLY in a current browser with a reliable internet connection. Customer payment methods are recorded in the POS; customer card and wallet charges use a separate payment service. The production service does not currently offer live marketplace connectors or ingredient-recipe management. Offline mode supports a saved catalog and provisional cash sales.',
                     'items' => ['Review supported hardware with the user guide before setting up a counter.', 'Subscription renewal invoices are paid individually; automatic debits are not included.', 'Sales and financial reports support daily operations and do not replace a complete accounting system.'],
                     'guide' => 'troubleshooting', 'guide_label' => 'See current capabilities and limitations'],
                 ['id' => 'privacy', 'title' => 'Clear account and privacy information.',

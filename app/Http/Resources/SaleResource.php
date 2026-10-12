@@ -29,6 +29,10 @@ class SaleResource extends JsonResource
             'discount_percent' => (float) $this->discount_percent,
             'tax_percent' => (float) $this->tax_percent,
             'created_at' => $this->created_at->toIso8601String(),
+            'offline' => $this->offline_recorded_at === null ? null : [
+                'recorded_at' => $this->offline_recorded_at->toIso8601String(),
+                'synced_at' => $this->offline_synced_at?->toIso8601String(),
+            ],
             'returned_at' => $this->returned_at?->toIso8601String(),
             'items' => array_map(fn (array $item): array => [
                 'product_id' => $item['product_id'], 'name' => $item['name'], 'sku' => $item['sku'],

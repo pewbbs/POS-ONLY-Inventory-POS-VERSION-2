@@ -68,7 +68,11 @@ class TeamController extends Controller
             if ($user->is_active && ! $isActive) {
                 $data['remember_token'] = Str::random(60);
             }
+            $revokeDevices = ! $isActive || $role !== $user->role;
             $user->forceFill($data)->save();
+            if ($revokeDevices) {
+                $user->tokens()->delete();
+            }
 
             return $user;
         }, 5);

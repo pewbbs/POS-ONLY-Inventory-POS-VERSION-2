@@ -106,7 +106,8 @@ class MarketingPagesTest extends TestCase
         Http::preventStrayRequests();
 
         $this->get('/inventory-management')->assertOk()->assertSeeText('not available in the current production service')
-            ->assertSeeText('Offline stock edits and offline sales are not supported');
+            ->assertSeeText('queue walk-in cash sales')
+            ->assertSeeText('Offline stock edits are not supported');
         $this->get('/point-of-sale')->assertOk()->assertSeeText('separate terminal or payment service')
             ->assertSeeText('automatic cash-drawer control is not included')
             ->assertSeeText('does not claim BIR certification');

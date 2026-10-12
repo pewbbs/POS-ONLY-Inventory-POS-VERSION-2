@@ -21,6 +21,7 @@ class AuditSuccessfulMutation
         $response = $next($request);
         $actions = [
             'POST api/sales' => ['checkout.confirmed', 'sale'],
+            'POST api/offline/sales' => ['checkout.confirmed', 'sale'],
             'POST api/sales/{sale}/return' => ['return.confirmed', 'sale'],
             'POST api/products' => ['product.created', 'product'],
             'PUT api/products/{product}' => ['product.updated', 'product'],
@@ -63,7 +64,8 @@ class AuditSuccessfulMutation
             'POST api/commerce/orders/{order}/import' => ['channel.order_imported', 'channel_order'],
             'POST api/commerce/orders/{order}/cancel' => ['channel.order_canceled', 'channel_order'],
         ];
-        $action = $actions[$request->method().' '.$request->route()?->uri()] ?? null;
+        $uri = preg_replace('/^api\/v1\//', 'api/', (string) $request->route()?->uri());
+        $action = $actions[$request->method().' '.$uri] ?? null;
         if (! $action || ! $request->user() || $response->getStatusCode() < 200 || $response->getStatusCode() >= 300 || $request->attributes->get('stock_mutation_replayed') === true) {
             return $response;
         }

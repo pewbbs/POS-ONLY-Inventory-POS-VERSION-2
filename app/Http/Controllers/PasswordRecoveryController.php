@@ -81,6 +81,7 @@ class PasswordRecoveryController extends Controller
                 }
                 $account->forceFill(['password' => Hash::make($password), 'remember_token' => Str::random(60)])->save();
                 DB::table('sessions')->where('user_id', $account->id)->delete();
+                $account->tokens()->delete();
                 $resetAccount = $account;
             });
         }, 5);

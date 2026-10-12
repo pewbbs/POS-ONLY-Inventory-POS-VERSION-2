@@ -10,6 +10,7 @@ use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\FinancialReportController;
 use App\Http\Controllers\MarketingPageController;
 use App\Http\Controllers\MonitoringController;
+use App\Http\Controllers\OfflineController;
 use App\Http\Controllers\PasswordRecoveryController;
 use App\Http\Controllers\PayMongoBillingController;
 use App\Http\Controllers\PayMongoWebhookController;
@@ -60,6 +61,8 @@ Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth')->n
 Route::get('/app/{section?}', [WorkspaceController::class, 'show'])->middleware(['auth:web', 'auth.session', 'tenant'])->name('workspace');
 Route::prefix('api')->middleware(['auth:web', 'auth.session', 'tenant', 'throttle:120,1', 'audit'])->group(function (): void {
     Route::get('/bootstrap', [WorkspaceController::class, 'bootstrap']);
+    Route::get('/offline/snapshot', [OfflineController::class, 'snapshot']);
+    Route::post('/offline/sales', [OfflineController::class, 'store']);
     Route::get('/settings/receipt-logo', [SettingsController::class, 'logo'])->name('settings.receipt-logo');
     Route::get('/reports/analytics', [SalesAnalyticsController::class, 'show']);
     Route::get('/sales', [SaleController::class, 'index']);

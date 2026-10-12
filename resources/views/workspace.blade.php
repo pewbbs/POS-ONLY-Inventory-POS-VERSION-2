@@ -9,6 +9,9 @@
     <title>Workspace — POSONLY</title>
     <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="{{ asset('css/workspace.css') }}?v={{ filemtime(public_path('css/workspace.css')) }}">
+    <link rel="stylesheet" href="{{ asset('css/offline.css') }}?v={{ filemtime(public_path('css/offline.css')) }}">
+    <script src="{{ asset('js/offline-store.js') }}?v={{ filemtime(public_path('js/offline-store.js')) }}" defer></script>
+    <script src="{{ asset('js/offline-web.js') }}?v={{ filemtime(public_path('js/offline-web.js')) }}" defer></script>
     <script src="{{ asset('js/workspace.js') }}?v={{ filemtime(public_path('js/workspace.js')) }}" defer></script>
 </head>
 <body data-section="{{ request()->segment(2, 'overview') }}">
@@ -47,6 +50,7 @@
             <button class="icon-button menu-button" id="menu-button" aria-label="Open navigation" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
             <div class="breadcrumbs"><span>Workspace</span><span>/</span><strong id="breadcrumb-section">Overview</strong></div>
             <div class="topbar-tools">
+                <button type="button" class="offline-mode-button" id="offline-mode-button">Offline mode</button>
                 <label class="location-picker"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h18M4 10v10h16V10M2 10l3-7h14l3 7M8 20v-6h5v6"/></svg><span class="sr-only">Active location</span><select id="location-select" aria-label="Active location"><option>Loading location…</option></select></label>
                 <a class="icon-button header-help" id="context-help" href="/guide#overview" aria-label="Help with this screen"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4.25 1.8c-1.1.7-1.75 1.2-1.75 2.7M12 17h.01"/></svg></a>
                 <span class="profile-avatar" id="profile-avatar" title="Your account">S</span>
@@ -58,6 +62,20 @@
         <footer class="app-footer"><span>POSONLY</span><a href="/guide">User guide</a></footer>
     </div>
     <dialog id="workspace-modal" aria-labelledby="modal-title"><div id="modal-content"></div></dialog>
+    <dialog id="offline-controls" aria-labelledby="offline-controls-title">
+        <h2 id="offline-controls-title">Offline mode on this device</h2>
+        <p class="offline-dialog-copy">Save a catalog for 24 hours and record cash sales for walk-in customers in the saved POS. Receipts are provisional until the server checks stock, prices, tax, and your original cash shift.</p>
+        <p class="offline-dialog-copy">Use a trusted device. Saved data is readable by people with access to this browser and can be removed by browser storage cleanup. Keep queued sales here until they are confirmed; download a private backup when needed. Card payments, returns, inventory edits, and billing need a connection.</p>
+        <p class="offline-device-status" id="offline-device-status" role="status">Checking device storage…</p>
+        <div class="offline-device-actions">
+            <button type="button" class="button primary" data-offline="enable">Enable on this device</button>
+            <a class="button" href="/offline.html" data-offline="open" hidden>Open saved POS</a>
+            <button type="button" class="button" data-offline="sync">Sync queued sales</button>
+            <button type="button" class="button" data-offline="export">Download queue backup</button>
+            <button type="button" class="button" data-offline="clear">Clear device data</button>
+        </div>
+        <div class="form-actions"><button type="button" class="button" data-offline="close">Close</button></div>
+    </dialog>
     <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
     <noscript><p class="noscript-message">Please enable JavaScript to use the inventory and checkout workspace.</p></noscript>
 </body>

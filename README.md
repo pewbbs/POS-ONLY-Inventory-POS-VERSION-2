@@ -31,9 +31,11 @@ Run `php artisan schedule:work --no-interaction` during local development to ref
 
 Administrators can inspect **System health** in the workspace. Operators can also run `php artisan monitoring:check --no-interaction` for sanitized infrastructure summaries; it reports actual checks and does not process business transactions. A synchronous queue runs diagnostics inline and cannot verify a separate worker heartbeat.
 
-## PayMongo test billing
+## PayMongo billing
 
-Hosted subscription-invoice checkout is supported only in local/testing environments with PayMongo test credentials. Set these values in your private `.env`, then clear cached configuration and restart any local queue worker:
+Hosted checkout pays individual subscription invoices. Local/testing environments use PayMongo test credentials; production can use live credentials, enabled payment methods, HTTPS return URLs, and a live webhook signing secret. POS tender records do not use this subscription-payment integration. Automatic recurring collection is not implemented.
+
+For a local test, set these values in your private `.env`, then clear cached configuration and restart any local queue worker:
 
 ```dotenv
 BILLING_PAYMENT_PROVIDER=paymongo
@@ -51,9 +53,9 @@ In **Billing & plans**, create an invoice, open **View invoice**, and select **P
 
 If checkout creation is uncertain and no session ID was saved, do not create it again. Use **Recover checkout** and enter the **Checkout session ID** copied from the PayMongo test dashboard. The server retrieves that session and verifies the saved invoice reference, amount, PHP currency, and test mode before accepting its link or payment. If the session cannot be located, leave the attempt unresolved and reconcile it with the provider. Repeating a creation request is not guaranteed to reuse a session.
 
-Hosted tests offer **Card** and **GCash**. For a successful card test, choose Card and enter Visa **4343434343434345**, an expiry after today, and a CVC of three digits, as listed in [PayMongo's payment-testing guide](https://docs.paymongo.com/docs/payment-acceptance-testing). Return and select **Recheck payment**; the invoice should show **Test payment confirmed**. Recheck again and confirm that the same invoice and paid-period dates remain unchanged.
+Hosted tests offer the configured test payment methods. Use the current examples in [PayMongo's payment-testing guide](https://docs.paymongo.com/docs/payment-acceptance-testing), then return and select **Recheck payment**; the invoice should show **Test payment confirmed**. Recheck again and confirm that the same invoice and paid-period dates remain unchanged.
 
-Rechecking a known session works without a webhook or tunnel. Optional signed events use `POST /webhooks/paymongo/test` and a private `PAYMONGO_WEBHOOK_SECRET`. Localhost is not reachable from PayMongo; an operator must separately arrange public HTTPS forwarding and register a test endpoint. No tunnel, provider account, or deployment is created by this repository. Webhook processing needs the configured worker. Provider HTTP tests use fakes; live checkout and payments remain blocked. See [PayMongo's API and webhook checklist](https://docs.paymongo.com/docs/developer-tools-go-live-checklist) for credential and delivery setup.
+Rechecking a known session works without a webhook or tunnel. Signed test events use `POST /webhooks/paymongo/test` and a private `PAYMONGO_WEBHOOK_SECRET`; live events use `POST /webhooks/paymongo` with their separate production signing secret. Localhost is not reachable from PayMongo; an operator must separately arrange public HTTPS forwarding and register a test endpoint. Webhook processing needs the configured worker. Automated and isolated acceptance tests disable live payments and fake external requests. See [PayMongo's API and webhook checklist](https://docs.paymongo.com/docs/developer-tools-go-live-checklist) for credential and delivery setup.
 
 ## Pages
 
@@ -74,9 +76,85 @@ Rechecking a known session works without a webhook or tunnel. Optional signed ev
 | `/app/team` | Staff accounts and roles |
 | `/app/activity` | Administrator activity history with filters and pagination |
 | `/app/monitoring` | Administrator system checks and business-scoped diagnostic notices |
-| `/app/billing` | Administrator plans, invoices, local simulation or PayMongo test checkout, payment records, and usage limits |
+| `/app/billing` | Administrator plans, invoices, configured PayMongo checkout, payment records, and usage limits |
 | `/app/settings` | Business checkout and receipt settings |
+| `/offline.html` | Opt-in device catalog and queued cash sales; server confirmation is required |
 | `/guide` | Searchable, printable staff manual |
+| `/api/v1` | Versioned, device-token mobile API |
+
+## Offline web support
+
+In a signed-in workspace, open **Offline mode**, review the device-storage notice, and select **Enable on this device** on a trusted device. Select **Open saved POS** while connected once so its static files are ready, then use that page when the connection is unavailable. Use **Refresh saved catalog** while online before a shift and after changing prices, tax, stock, or cash sessions.
+
+The device snapshot lasts 24 hours. It contains product names, SKUs/barcodes, variants, retail/wholesale prices, location stock/reservations, tax, receipt footer, company/account IDs, and the account's open cash-session IDs. It excludes costs, contact lists, team details, receipt history, billing information, provider credentials, passwords, and mobile bearer tokens. Browser storage is local to the device and is not a substitute for account authentication or an encrypted backup.
+
+Offline checkout supports walk-in cash sales only. Choose the location and price tier, review the quoted amounts, enter the cash tender, and save the sale to this device's queue. Card, wallet, split payments, customer tagging, stock edits, purchases, returns, billing, and cash-session changes require an online connection. A queued sale is provisional: it has not yet received a server receipt, deducted central stock, or updated the server's cash drawer.
+
+On reconnection, sign in as the same company user and select **Sync queued sales**. Each immutable queued request has one idempotency key. The server validates current access, available stock excluding reservations, quoted prices/tax/totals, and the original cash-session scope before saving the receipt and stock deduction together. A changed or closed shift, changed price/tax, stock shortage, or reused key is held for review rather than silently repricing or assigning the sale to another shift. A lost response is retried with the original key and payload.
+
+Snapshots cannot guarantee stock availability across disconnected devices. Catalog expiry stops new offline checkouts; sales recorded within the valid period can still be submitted afterward. `created_at` and reports use server confirmation time. Receipts also expose the separate `offline.recorded_at` and `offline.synced_at` timestamps.
+
+Use **Download queue backup** to keep a private recovery copy; exporting does not confirm or delete a sale. Resolve all queued sales before clearing browser data or changing accounts. The normal **Clear device data** action is blocked while a queued sale still needs confirmation. Keep a device with pending sales available until they are reconciled.
+
+Only static offline assets are cached by the service worker. Authenticated workspace HTML, CSRF tokens, API responses, and billing/developer pages are not placed in its cache. Authentication or access failures never become a successful cached API response.
+
+When changing any file listed in `ASSETS` in `public/service-worker.js`, update that worker's `CACHE` hash/version suffix and publish it with the changed assets. The new worker removes previous POSONLY shell caches when activated. Cache upgrades must preserve IndexedDB sale queues; do not clear unsynchronized records to refresh application files.
+
+## Mobile API preparation
+
+Laravel remains the authority for company data, authorization, prices, stock, cash sessions, and receipts. `routes/api.php` exposes `/api/v1` JSON endpoints for a future native app. The API does not include a native mobile interface, native Google/Apple sign-in, developer administration, or provider payment collection.
+
+Create a device token by posting an existing company account's credentials to `/api/v1/auth/token`. Production requires HTTPS. Request example, using placeholders only:
+
+```http
+POST /api/v1/auth/token
+Accept: application/json
+Content-Type: application/json
+
+{"email":"your-company-account@example.com","password":"<enter privately>","device_name":"Counter tablet"}
+```
+
+The `201` response supplies `token_type`, a one-time plain `token`, `expires_at`, and server-selected `abilities`. The defaults in `config/mobile-api.php` are a 30-day lifetime and at most 10 device tokens per account. Store the token in the native platform's secure credential store; never embed it in an app bundle, URL, analytics event, browser local storage, screenshot, or repository. Subsequent requests send it only in the `Authorization: Bearer <device-token>` header, with `Accept: application/json`. Do not send `tenant_id` or requested abilities during token creation; the account determines its company and role.
+
+| Method and path, relative to `/api/v1` | Purpose |
+| --- | --- |
+| `GET /me`, `GET /bootstrap` | Current account, company, role, permitted abilities, locations, receipt settings, and access flags |
+| `GET /devices`, `DELETE /devices/{token}`, `DELETE /auth/token` | List own devices, revoke an owned token, or revoke the current token |
+| `GET /products`, `GET /products/{product}` | Paginated catalog or one company product, with variants, pricing, and location stock |
+| `GET /settings/receipt-logo` | Receipt logo bytes; send the bearer header when fetching the protected image |
+| `GET /customers`, `POST /customers` | Customer search and creation |
+| `GET /sales`, `GET /sales/{sale}`, `POST /sales` | Permitted receipt history, one receipt, and server-calculated checkout |
+| `GET /cash-sessions`, `POST /cash-sessions/open`, `POST /cash-sessions/{session}/adjustments`, `POST /cash-sessions/{session}/close` | Own location cash shifts and drawer reconciliation |
+| `GET /offline/snapshot`, `POST /offline/sales` | Sanitized signed snapshot and queued cash-sale confirmation |
+| `GET /reports/analytics` | Sales analytics within the account's permitted scope |
+| `POST /sales/{sale}/return`, `GET /reports/financial` | Manager/administrator returns and financial summaries |
+| `GET /suppliers`, `POST /suppliers`, `GET /purchase-orders`, `GET /purchase-orders/{order}` | Manager/administrator supplier and purchasing records |
+| `POST /purchase-orders`, `POST /purchase-orders/{order}/approve`, `/receive`, `/cancel` | Manager/administrator purchase order lifecycle |
+| `POST /products`, `PUT /products/{product}`, `POST /product-families`, `POST /product-families/{family}/variants` | Manager/administrator catalog and variant changes |
+| `POST /stock/adjust`, `POST /stock/transfer` | Manager/administrator stock changes |
+
+Product/contact lists support `page`, `per_page` (1–100), and `q`. Products also support `barcode` and `sku`; purchase lists support `status` and `location_id`. Paginated responses include `data` and pagination metadata. Cashiers can read their own sales; current roles and token abilities both constrain requests, and related IDs are always scoped to the authenticated company.
+
+For checkout, stock adjustments/transfers, purchase creation/receiving, cash-session actions, partial returns, and offline confirmation, send a stable `idempotency_key` of 8–100 characters. Generate it once per intended action and keep the exact payload for retries after timeouts. Do not create another key to bypass an uncertain result or a conflict. Online sale requests contain `location_id`, optional `customer_id`, `price_tier`, `items` (`product_id`, `quantity`), `discount_percent`, `tax_percent`, and `payments` (`method`, `amount`); money amounts are PHP decimal values, while quoted offline prices/totals below are integer cents.
+
+Offline confirmation adds `permit`, an ISO 8601 `recorded_at` with a timezone, and this required quote to the cash-only sale request:
+
+```json
+{
+  "expected": {
+    "items": [{"product_id": 123, "unit_price_cents": 25000}],
+    "subtotal_cents": 25000,
+    "discount_cents": 0,
+    "tax_cents": 3000,
+    "total_cents": 28000,
+    "cash_session_id": null
+  }
+}
+```
+
+The example is a quote fragment, not a complete checkout. Match every requested product exactly once and include `cash_session_id`, even when it is `null`. Do not supply customer details. A permit is a signed snapshot bound to the account; it does not authenticate API requests. A sale recorded during its 24-hour period can sync after that period. The server rejects future recording times beyond the configured five-minute clock allowance. Successful sale responses are plain receipt resources with `offline: {recorded_at, synced_at}` for offline confirmations and `offline: null` for normal receipts.
+
+Handle `401` by asking the user to sign in again; `403` denotes denied access, `404` a missing/unavailable company record, `409` a conflict requiring review, `422` invalid fields or insufficient stock, `423` paused subscription/company writes, and `429` rate limiting. A network failure or `5xx` does not prove that a write failed: retry the same protected request. Tokens expire without an automatic refresh endpoint; reauthenticate to issue a new device token. Password reset revokes existing device tokens, and administrators can pause staff access. No live payment is needed to test these APIs in an isolated copy.
 
 ## Implemented scope
 
@@ -90,10 +168,12 @@ Rechecking a known session works without a webhook or tunnel. Optional signed ev
 - Duplicate-safe checkout retries, with original cart/payment recovery from the same tab's session storage.
 - Optional per-user/location cash sessions with opening float, cash in/out, immutable closing count, and variance; actual cash refunds need a separate cash-out record.
 - Browser/account-scoped held carts with current price and stock review on resume.
+- Opt-in device catalog caching and a cash-only offline queue with signed snapshot periods, explicit synchronization, exact quote/shift checks, and provisional records until server confirmation.
+- Versioned mobile API with finite, revocable, role-scoped Sanctum device tokens and company-scoped inventory/POS operations.
 - Draft/approved supplier purchase orders, partial delivery receiving, receipt history, approval, and outstanding-order cancellation.
 - Product/location/supplier replenishment rules that generate reviewable drafts while accounting for all outstanding quantities across suppliers.
 - Local trial and monthly/annual subscription records, invoices, simulated payment confirmation, next-renewal plan changes, active staff/location limits, expiry access control, and full-history invoice CSV export.
-- Optional PayMongo test hosted checkout for individual subscription invoices, immutable payment-attempt records, verified dashboard-session recovery, server payment rechecks, and signed test-webhook processing. Test provider payments and historical local simulations remain distinctly labeled; live collection and automatic recurring charges are blocked.
+- Optional PayMongo hosted checkout for individual subscription invoices, immutable payment-attempt records, verified dashboard-session recovery, server payment rechecks, and signed mode-specific webhook processing. Production live confirmations, provider tests, and local simulations stay distinctly labeled; automatic recurring charges are not implemented.
 - Local sales channels with SKU-mapped catalog copies, recorded manual syncs/failure practice, immutable simulated orders, central reservations, import-once sales, and cancellation.
 - Customer tagging, operational reports, staff name/role editing, access pause/reactivation, and business settings.
 - Administrator activity history of successful workspace actions, with member/action/date filters and pagination.
@@ -106,9 +186,11 @@ Rechecking a known session works without a webhook or tunnel. Optional signed ev
 
 ## Integration boundaries
 
-This is a working local application, not a deployed production cloud service. Recording a card/e-wallet tender does not charge a customer; recording a return does not issue a refund. Held carts stay in the current browser/account, reserve no stock, and do not enable offline sales. Replenishment creates drafts for review and sends nothing to suppliers. Channels simulate catalog sync and paid orders locally; no external storefront or payment provider is contacted by those channels. Pending orders reserve central stock until import or cancellation; held POS carts reserve nothing. Local billing simulation uses no provider; configured PayMongo test checkout contacts its test API but collects no live payment. Neither simulated nor provider-test payments are real paid subscriptions. Production preflight rejects enabled PayMongo checkout, test credentials, test attempts/invoices/webhook receipts, simulated billing payments, and simulated channel data.
+The same Laravel application supports local development and configured production deployment. Recording a card/e-wallet POS tender does not charge a customer; recording a return does not issue a refund. Held carts stay in the current browser/account and reserve no stock. The separate opt-in offline cash queue remains provisional until the server confirms it. Replenishment creates drafts for review and sends nothing to suppliers. Channels simulate catalog sync and paid orders locally; no external storefront or payment provider is contacted by those channels. Pending channel orders reserve central stock until import or cancellation; held/offline POS carts reserve no central stock.
 
-External payment collection/refunds, live subscription checkout and recurring collection, offline operation, external e-commerce sync/webhooks, supplier messaging, email invitation delivery, and full accounting require provider integration or further implementation. Password recovery is implemented; its emails require a configured delivery service.
+Local billing simulation uses no provider; PayMongo test checkout contacts its test API and collects no live payment. Configured production PayMongo live checkout collects real payments for subscription invoices only. Production preflight rejects test credentials/records and simulated billing/channel data, and requires the live provider configuration when checkout is enabled. Keep isolated test records and credentials out of production.
+
+Integrated POS payment collection/refunds, automatic subscription debits, external e-commerce sync/webhooks, supplier messaging, email invitation delivery, and full accounting require further integration. Offline purchases, returns, stock changes, card/wallet payments, and billing are not supported. Password recovery is implemented; its emails require a configured delivery service. A native mobile client must still be built against the prepared API.
 
 Hardware support uses scanner keyboard input and browser printing. Direct printer commands, drawer control, and card-reader integration are not included. Test actual counter devices before live operation.
 
@@ -116,7 +198,7 @@ Hardware support uses scanner keyboard input and browser printing. Direct printe
 
 [Dockerfile](Dockerfile), [the Compose stack](deploy/compose.yml), and [the production environment template](.env.production.example) prepare a single-host PHP 8.4/Apache + MySQL deployment with separate worker and scheduler services. `php artisan stockroom:preflight --no-interaction` checks production settings and database schema without changing data or displaying secrets.
 
-Follow [the operator deployment guide](docs/DEPLOYMENT.md) for key creation, one-off migrations, HTTPS, email delivery, persistence, and launch checks. No hosting was created or service deployed. Compose configuration and entrypoint shell syntax were checked; the image and running stack remain untested because the local Docker daemon was stopped.
+Follow [the operator deployment guide](docs/DEPLOYMENT.md) for key creation, additive migrations, HTTPS, email delivery, persistence, and launch checks. Preserve the production application key and configuration, back up the app/database before a release, and never seed practice data into an existing company database. The Compose image and running stack require their own environment validation; repository preparation does not verify a running deployment.
 
 ## Verify
 

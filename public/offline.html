@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#191918">
+    <title>Saved POS — POSONLY</title><link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/css/workspace.css"><link rel="stylesheet" href="/css/offline.css">
+    <script src="/js/offline-store.js" defer></script><script src="/js/offline-shell.js" defer></script>
+</head>
+<body class="offline-page">
+    <a class="skip-link" href="#offline-main">Skip to saved POS</a>
+    <header class="offline-header"><a class="brand" href="/">POSONLY<span class="brand-period">.</span></a><a class="button" href="/app/pos">Online workspace</a></header>
+    <main id="offline-main" class="offline-main" tabindex="-1">
+        <div class="page-heading"><div><p class="eyebrow">Saved on this device</p><h1>Saved point of sale</h1><p id="offline-company">Loading saved account…</p></div></div>
+        <p class="offline-notice" id="offline-notice" role="status">Reading local storage…</p>
+        <div class="offline-tools"><button class="button" id="offline-refresh">Refresh catalog</button><button class="button" id="offline-sync">Sync queued sales</button><button class="button" id="offline-export">Download queue backup</button><a href="/login" class="button">Sign in</a></div>
+        <p class="offline-description">Cash sales for walk-in customers only. Stock here is a saved estimate; other tills may sell the same items. Receipts stay provisional until the server confirms them. Keep this trusted device and its browser data until every queued sale is resolved.</p>
+        <div id="offline-content"></div>
+        <section class="panel offline-queue"><div class="panel-header"><div><h2>Saved cash sales</h2><p>Original amounts stay unchanged during synchronization.</p></div></div><div id="offline-sales"></div></section>
+    </main>
+    <dialog id="offline-receipt" aria-labelledby="offline-receipt-title"><div class="offline-receipt-content"></div></dialog>
+    <noscript><p>Enable JavaScript to open the saved catalog and cash queue.</p></noscript>
+</body></html>
