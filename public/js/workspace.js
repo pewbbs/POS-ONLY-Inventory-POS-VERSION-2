@@ -1581,6 +1581,11 @@
         return `${heading('Settings', sections.settings[1], '', '', 'workspace-heading')}<div class="settings-grid"><section class="panel"><div class="panel-header"><div><h2>Company & receipt details</h2><p>Company details used on receipts.</p></div></div><form class="settings-form" data-form="settings" enctype="multipart/form-data"><div class="form-error" hidden role="alert"></div>${branding}<div class="settings-section-heading"><h2>Checkout & inventory</h2><p>Default checkout and inventory settings.</p></div>${defaults}<div class="form-actions"><button class="button primary" type="submit">Save settings ${icon('check')}</button></div></form></section><div class="settings-sidebar"><section class="panel receipt-preview-panel" aria-label="Receipt header preview"><div class="panel-header"><div><h2>Receipt header preview</h2><p>Preview your company details before saving.</p></div></div><div class="receipt-preview-content"><div class="receipt-paper" id="receipt-settings-preview">${receiptBrandingHtml(settings)}<p>${escape(settings.receipt_footer ?? 'Thank you for shopping with us.')}<br>Payment record · not a fiscal invoice.</p></div><small id="receipt-preview-status" role="status">Saved company details · blank fields stay off receipts.</small></div></section><section class="panel plan-card"><h3>Sign-in accounts</h3><p>Connect your own Google or Apple account for future sign-ins.</p><a class="button" href="/account/connections">Manage sign-in accounts</a></section><section class="panel plan-card workspace-plan-card"><h3>Billing & plans</h3><p>Review your subscription and invoice records.</p></section><div class="settings-note">Only administrators can edit these details. Receipts use your company's current saved profile, including when you reprint an earlier sale.</div></div></div><section class="panel recent-sales" style="margin-top:22px"><div class="panel-header"><div><h2>Stock locations</h2><p>Each store, warehouse, or online location has its own stock balance.</p></div>${button('Add location', 'add-location', 'small', 'plus')}</div><div class="table-wrap"><table><thead><tr><th>Location</th><th>Type</th><th>Address / notes</th></tr></thead><tbody>${locations().map(location => `<tr><td><strong>${escape(location.name)}</strong></td><td>${statusBadge(location.type || 'Store')}</td><td>${escape(location.address || '—')}</td></tr>`).join('')}</tbody></table></div><div class="access-note">Commerce channels can use this location’s stock in Channels. This release simulates orders and catalog sync locally; no external storefront is connected.</div></section>`;
     }
 
+    async function refreshPurchases() {
+        if (state.refreshing) { await activeRefresh; }
+        if (state.section === 'purchases') { await refresh(); }
+    }
+
     function navigate(section) {
         if (state.busy && state.section === 'settings') { toast('Please wait for your settings to finish saving.'); return; }
         if (!Object.hasOwn(sections, section)) { return; }
@@ -1592,6 +1597,7 @@
         state.productFamily = 'all';
         history.pushState({}, '', `/app/${section}${section === 'reports' && state.reportView === 'financial' && canManage() ? '?view=financial' : ''}`);
         renderSection();
+        if (section === 'purchases') { refreshPurchases().catch(() => toast('Purchase records could not be refreshed. Reopen Purchasing to try again.', true)); }
         closeSidebar();
         window.scrollTo({top: 0, behavior: 'instant'});
     }
@@ -2609,7 +2615,7 @@
     modal.addEventListener('click', event => { if (event.target === modal && !state.busy) { modal.close(); } });
     modal.addEventListener('close', () => { state.saleRecordRequest += 1; });
     modal.addEventListener('cancel', event => { if (state.busy) { event.preventDefault(); } });
-    window.addEventListener('popstate', () => { state.saleRecordRequest += 1; const section = location.pathname.split('/')[2] || 'overview'; state.section = Object.hasOwn(sections, section) ? section : 'overview'; if (state.section === 'channels') { invalidateCommerce(); } if (state.section === 'reports') { state.reportView = new URLSearchParams(location.search).get('view') === 'financial' && canManage() ? 'financial' : 'analytics'; } state.search = ''; state.category = 'All products'; renderSection(); });
+    window.addEventListener('popstate', () => { state.saleRecordRequest += 1; const section = location.pathname.split('/')[2] || 'overview'; state.section = Object.hasOwn(sections, section) ? section : 'overview'; if (state.section === 'channels') { invalidateCommerce(); } if (state.section === 'reports') { state.reportView = new URLSearchParams(location.search).get('view') === 'financial' && canManage() ? 'financial' : 'analytics'; } state.search = ''; state.category = 'All products'; renderSection(); if (state.section === 'purchases') { refreshPurchases().catch(() => toast('Purchase records could not be refreshed. Reopen Purchasing to try again.', true)); } });
     window.addEventListener('offline', () => { document.getElementById('connection-label').textContent = 'Offline · reconnect before saving'; document.querySelector('.workspace-status').classList.add('offline'); toast('You are offline. Reconnect before completing a sale.', true); });
     window.addEventListener('online', () => { document.getElementById('connection-label').textContent = 'Reconnected · refresh to sync'; document.querySelector('.workspace-status').classList.remove('offline'); });
 

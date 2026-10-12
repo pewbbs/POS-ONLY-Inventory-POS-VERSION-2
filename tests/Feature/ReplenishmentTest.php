@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\CheckLowStock;
 use App\Models\Location;
 use App\Models\Product;
+use App\Models\ProductFamily;
 use App\Models\PurchaseOrder;
 use App\Models\ReorderRule;
 use App\Models\Stock;
@@ -13,6 +14,8 @@ use App\Models\Tenant;
 use App\Models\User;
 use App\Services\ReplenishmentService;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use RuntimeException;
 use Tests\TestCase;
 
 class ReplenishmentTest extends TestCase
@@ -218,5 +221,125 @@ class ReplenishmentTest extends TestCase
         $this->postJson('/api/reorder-rules/generate')->assertForbidden();
         $this->assertDatabaseHas('reorder_rules', ['id' => $store['rule']->id, 'enabled' => true, 'target_quantity' => 20]);
         $this->assertDatabaseCount('purchase_orders', 0);
+    }
+
+    public function test_channel_reservations_trigger_replenishment_for_available_stock_without_changing_on_hand_stock(): void
+    {
+        $store = $this->store(15);
+        config(['commerce.simulations_enabled' => true]);
+        $channel = $this->actingAs($store['user'])->postJson('/api/commerce/channels', [
+            'name' => 'Replenishment storefront', 'kind' => 'web_store', 'location_id' => $store['location']->id,
+            'idempotency_key' => 'replenishment-channel',
+        ])->assertCreated()->json('id');
+        $this->postJson('/api/commerce/channels/'.$channel.'/orders', [
+            'external_reference' => 'REPLENISH-RESERVED', 'idempotency_key' => 'replenishment-reservation',
+            'items' => [['sku' => $store['product']->sku, 'quantity' => 7]],
+        ])->assertCreated()->assertJsonPath('status', 'pending');
+
+        (new CheckLowStock($store['tenant']->id))->handle();
+
+        $order = PurchaseOrder::sole();
+        $this->assertSame(12, $order->items[0]['quantity']);
+        $this->assertSame('draft', $order->status);
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 15, 'reserved_quantity' => 7]);
+        $this->assertDatabaseHas('low_stock_alerts', ['tenant_id' => $store['tenant']->id, 'product_id' => $store['product']->id,
+            'location_id' => $store['location']->id, 'quantity' => 8, 'active' => true]);
+        $this->assertDatabaseCount('sales', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+        $this->assertCount(0, app(ReplenishmentService::class)->generateForTenant($store['tenant']->id));
+    }
+
+    public function test_other_location_variant_and_company_orders_do_not_cover_this_rule(): void
+    {
+        $store = $this->store();
+        $family = ProductFamily::factory()->create(['tenant_id' => $store['tenant']->id]);
+        $store['product']->update(['product_family_id' => $family->id, 'variant_options' => ['size' => 'Small'], 'variant_key' => 'small']);
+        $otherLocation = Location::factory()->create(['tenant_id' => $store['tenant']->id]);
+        $secondLocation = array_replace($store, ['location' => $otherLocation]);
+        Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $store['product']->id, 'location_id' => $otherLocation->id, 'quantity' => 0]);
+        ReorderRule::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $store['product']->id, 'location_id' => $otherLocation->id,
+            'supplier_id' => $store['supplier']->id, 'user_id' => $store['user']->id, 'target_quantity' => 20]);
+        $this->order($secondLocation, 'ordered', 20);
+        $sibling = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'product_family_id' => $family->id,
+            'variant_options' => ['size' => 'Large'], 'variant_key' => 'large']);
+        $siblingStore = array_replace($store, ['product' => $sibling]);
+        Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $sibling->id, 'location_id' => $store['location']->id, 'quantity' => 0]);
+        ReorderRule::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $sibling->id, 'location_id' => $store['location']->id,
+            'supplier_id' => $store['supplier']->id, 'user_id' => $store['user']->id, 'target_quantity' => 20]);
+        $this->order($siblingStore, 'draft', 20);
+        $otherCompany = $this->store();
+        $foreignOrder = $this->order($otherCompany, 'ordered', 100);
+
+        $orders = app(ReplenishmentService::class)->generateForTenant($store['tenant']->id);
+
+        $this->assertCount(1, $orders);
+        $this->assertSame($store['rule']->id, $orders->sole()->reorder_rule_id);
+        $this->assertSame(16, $orders->sole()->items[0]['quantity']);
+        $this->assertDatabaseCount('purchase_orders', 4);
+        $this->assertDatabaseHas('purchase_orders', ['id' => $foreignOrder->id, 'tenant_id' => $otherCompany['tenant']->id, 'status' => 'ordered']);
+        $this->assertDatabaseHas('stocks', ['id' => $otherCompany['stock']->id, 'quantity' => 4]);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_partial_receiving_and_cancellation_replenish_only_the_remaining_shortfall(): void
+    {
+        $store = $this->store();
+        $service = app(ReplenishmentService::class);
+        $first = $service->generateForTenant($store['tenant']->id)->sole();
+        $this->actingAs($store['user'])->postJson('/api/purchase-orders/'.$first->id.'/approve')->assertOk()->assertJsonPath('status', 'ordered');
+        $this->postJson('/api/purchase-orders/'.$first->id.'/receive', [
+            'idempotency_key' => 'replenishment-partial-receipt',
+            'items' => [['product_id' => $store['product']->id, 'quantity' => 5]],
+        ])->assertOk()->assertJsonPath('status', 'partially_received')->assertJsonPath('remaining_quantity', 11);
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 9]);
+        $this->assertCount(0, $service->generateForTenant($store['tenant']->id));
+        $this->postJson('/api/purchase-orders/'.$first->id.'/cancel')->assertOk()->assertJsonPath('status', 'cancelled');
+
+        $replacement = $service->generateForTenant($store['tenant']->id)->sole();
+
+        $this->assertSame(11, $replacement->items[0]['quantity']);
+        $this->postJson('/api/purchase-orders/'.$replacement->id.'/approve')->assertOk();
+        $this->postJson('/api/purchase-orders/'.$replacement->id.'/receive', [
+            'idempotency_key' => 'replenishment-replacement-receipt',
+            'items' => [['product_id' => $store['product']->id, 'quantity' => 11]],
+        ])->assertOk()->assertJsonPath('status', 'received')->assertJsonPath('remaining_quantity', 0);
+        (new CheckLowStock($store['tenant']->id))->handle();
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 20]);
+        $this->assertDatabaseHas('low_stock_alerts', ['product_id' => $store['product']->id, 'location_id' => $store['location']->id, 'quantity' => 20, 'active' => false]);
+        $this->assertDatabaseCount('purchase_orders', 2);
+        $this->assertDatabaseCount('purchase_receipts', 2);
+        $this->assertDatabaseCount('stock_movements', 2);
+        $this->assertCount(0, $service->generateForTenant($store['tenant']->id));
+    }
+
+    public function test_rolled_back_replenishment_leaves_no_draft_or_missing_stock_row_and_retries_once(): void
+    {
+        $store = $this->store();
+        $store['stock']->delete();
+        $service = app(ReplenishmentService::class);
+
+        try {
+            DB::transaction(function () use ($store, $service): void {
+                $this->assertCount(1, $service->generateForTenant($store['tenant']->id));
+
+                throw new RuntimeException('Interrupt before the replenishment transaction commits.');
+            });
+            $this->fail('The interrupted replenishment transaction should not commit.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Interrupt before the replenishment transaction commits.', $exception->getMessage());
+        }
+
+        $this->assertDatabaseCount('purchase_orders', 0);
+        $this->assertDatabaseCount('stocks', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+        $job = new CheckLowStock($store['tenant']->id);
+        $job->handle();
+        $job->handle();
+        $order = PurchaseOrder::sole();
+        $this->assertSame(20, $order->items[0]['quantity']);
+        $this->assertSame('draft', $order->status);
+        $this->assertDatabaseHas('stocks', ['tenant_id' => $store['tenant']->id, 'product_id' => $store['product']->id,
+            'location_id' => $store['location']->id, 'quantity' => 0]);
+        $this->assertDatabaseCount('purchase_receipts', 0);
     }
 }
