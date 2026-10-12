@@ -68,6 +68,32 @@ class DeveloperPortalTest extends TestCase
         $this->assertSame($password, $developer->fresh()->password);
     }
 
+    public function test_developer_login_rejects_a_null_byte_suffix_instead_of_authenticating_the_prefix(): void
+    {
+        $developer = PlatformAdmin::factory()->create();
+        $before = $developer->fresh()->getAttributes();
+
+        $this->postJson('/developer/login', ['email' => $developer->email, 'password' => "DeveloperPassword123!\0suffix"])
+            ->assertUnprocessable()->assertJsonValidationErrors('password');
+
+        $this->assertGuest('developer');
+        $this->assertSame($before, $developer->fresh()->getAttributes());
+    }
+
+    public function test_setup_rejects_a_null_byte_password_without_consuming_the_invitation(): void
+    {
+        $setup = $this->pendingDeveloper();
+        $before = $setup['developer']->fresh()->getAttributes();
+
+        $this->postJson('/developer/setup', ['email' => $setup['developer']->email, 'token' => $setup['token'],
+            'password' => "private\0password", 'password_confirmation' => "private\0password"])
+            ->assertUnprocessable()->assertJsonValidationErrors('password');
+
+        $this->assertSame($before, $setup['developer']->fresh()->getAttributes());
+        $this->assertGuest('developer');
+        $this->assertDatabaseCount('platform_audit_logs', 0);
+    }
+
     public function test_company_credentials_cannot_sign_in_as_a_developer(): void
     {
         $company = $this->company();

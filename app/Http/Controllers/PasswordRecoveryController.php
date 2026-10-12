@@ -67,7 +67,7 @@ class PasswordRecoveryController extends Controller
         $this->canonicalizeEmail($request);
         $data = $request->validate([
             'email' => ['required', 'email', 'max:255'], 'token' => ['required', 'string', 'max:255'],
-            'password' => ['required', 'string', 'min:10', 'max:255', 'confirmed'],
+            'password' => ['required', 'string', 'min:10', 'max:255', 'not_regex:/\x00/', 'confirmed'],
         ]);
         $resetAccount = null;
         $status = DB::transaction(function () use ($data, &$resetAccount): string {

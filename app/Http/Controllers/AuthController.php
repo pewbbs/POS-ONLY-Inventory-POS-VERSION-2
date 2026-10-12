@@ -37,7 +37,7 @@ class AuthController extends Controller
     public function login(Request $request): RedirectResponse
     {
         $this->canonicalizeEmail($request);
-        $credentials = $request->validate(['email' => ['required', 'email'], 'password' => ['required', 'string']]);
+        $credentials = $request->validate(['email' => ['required', 'email'], 'password' => ['required', 'string', 'not_regex:/\x00/']]);
         if (! Auth::guard('web')->attempt($credentials + ['is_active' => true])) {
             throw ValidationException::withMessages(['email' => 'The email or password is incorrect.']);
         }
@@ -56,7 +56,7 @@ class AuthController extends Controller
         $data = $request->validate([
             'business_name' => ['required', 'string', 'max:100'], 'name' => ['required', 'string', 'max:100'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:10', 'max:255', 'confirmed'],
+            'password' => ['required', 'string', 'min:10', 'max:255', 'not_regex:/\x00/', 'confirmed'],
             'plan' => ['nullable', Rule::in(['starter', 'grow', 'scale'])],
         ]);
         $user = app(WorkspaceRegistrationService::class)->create($data);

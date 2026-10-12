@@ -55,6 +55,21 @@ class TeamAccessTest extends TestCase
         $this->patchJson('/api/team/1', ['role' => 'manager'])->assertUnauthorized();
     }
 
+    public function test_team_creation_rejects_a_null_byte_password_without_adding_a_member(): void
+    {
+        $team = $this->team();
+        $subscription = Subscription::factory()->create(['tenant_id' => $team['tenant']->id]);
+        $before = $subscription->fresh()->getAttributes();
+
+        $this->actingAs($team['admin'])->postJson('/api/team', ['name' => 'New member', 'email' => 'new-member@example.test',
+            'role' => 'cashier', 'password' => "private\0password"])
+            ->assertUnprocessable()->assertJsonValidationErrors('password');
+
+        $this->assertDatabaseCount('users', 2);
+        $this->assertDatabaseMissing('users', ['email' => 'new-member@example.test']);
+        $this->assertSame($before, $subscription->fresh()->getAttributes());
+    }
+
     #[TestWith(['manager'])]
     #[TestWith(['cashier'])]
     public function test_team_changes_refuse_unprivileged_roles_as_403(string $role): void

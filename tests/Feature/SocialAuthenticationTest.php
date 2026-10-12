@@ -412,6 +412,105 @@ class SocialAuthenticationTest extends TestCase
         Http::assertNothingSent();
     }
 
+    #[TestWith([['is_active' => false]])]
+    #[TestWith([['password' => 'ChangedDuringGoogleVerification123!']])]
+    public function test_account_changes_during_google_verification_reject_the_connection_and_end_the_session(array $changes): void
+    {
+        $user = User::factory()->create();
+        $client = $this->client();
+        $this->actingAs($user, 'web');
+        $flow = $this->start($client, 'google', 'connect');
+        $client->shouldReceive('identity')->once()->with('google', 'sample-code', $flow['nonce'], $flow['code_verifier'])
+            ->andReturnUsing(function () use ($user, $changes): array {
+                $user->fresh()->update($changes);
+
+                return $this->profile();
+            });
+
+        $this->finishGoogle($flow)->assertRedirect('/login')->assertSessionHasErrors([
+            'social_auth' => 'Your account changed while connecting. Sign in again before retrying.',
+        ]);
+
+        $this->assertGuest('web');
+        $this->assertDatabaseCount('social_identities', 0);
+        $this->assertDatabaseCount('users', 1);
+        $this->assertDatabaseCount('tenants', 1);
+        $this->assertNull($this->app['session']->get('social_auth.flow'));
+        Http::assertNothingSent();
+    }
+
+    public function test_deleted_account_during_google_verification_cannot_receive_a_connection(): void
+    {
+        $user = User::factory()->create();
+        $client = $this->client();
+        $this->actingAs($user, 'web');
+        $flow = $this->start($client, 'google', 'connect');
+        $client->shouldReceive('identity')->once()->with('google', 'sample-code', $flow['nonce'], $flow['code_verifier'])
+            ->andReturnUsing(function () use ($user): array {
+                $user->fresh()->delete();
+
+                return $this->profile();
+            });
+
+        $this->finishGoogle($flow)->assertRedirect('/login')->assertSessionHasErrors([
+            'social_auth' => 'Your account changed while connecting. Sign in again before retrying.',
+        ]);
+
+        $this->assertGuest('web');
+        $this->assertDatabaseCount('social_identities', 0);
+        $this->assertDatabaseCount('users', 0);
+        $this->assertDatabaseCount('tenants', 1);
+        Http::assertNothingSent();
+    }
+
+    public function test_switching_to_another_company_account_cannot_finish_the_original_google_connection(): void
+    {
+        $original = User::factory()->create();
+        $other = User::factory()->create(['role' => 'cashier']);
+        $client = $this->client();
+        $this->actingAs($original, 'web');
+        $flow = $this->start($client, 'google', 'connect');
+        $client->shouldNotReceive('identity');
+        $this->actingAs($other, 'web');
+
+        $this->finishGoogle($flow)->assertRedirect('/account/connections')->assertSessionHasErrors([
+            'social_auth' => 'Your session changed while connecting. Start again from your account settings.',
+        ]);
+
+        $this->assertAuthenticatedAs($other, 'web');
+        $this->assertDatabaseCount('social_identities', 0);
+        $this->assertDatabaseCount('users', 2);
+        $this->assertDatabaseCount('tenants', 2);
+        Http::assertNothingSent();
+    }
+
+    public function test_google_sign_in_uses_the_latest_company_role_after_provider_verification(): void
+    {
+        $user = User::factory()->create(['role' => 'admin']);
+        $tenantBefore = $user->tenant->getAttributes();
+        SocialIdentity::factory()->create(['user_id' => $user->id, 'provider' => 'google', 'subject_hash' => hash('sha256', 'google-subject')]);
+        $client = $this->client();
+        $flow = $this->start($client);
+        $client->shouldReceive('identity')->once()->with('google', 'sample-code', $flow['nonce'], $flow['code_verifier'])
+            ->andReturnUsing(function () use ($user): array {
+                $user->fresh()->update(['role' => 'cashier']);
+
+                return $this->profile();
+            });
+
+        $this->finishGoogle($flow)->assertRedirect('/app');
+
+        $this->getJson('/api/bootstrap')->assertOk()->assertJsonPath('user.id', $user->id)
+            ->assertJsonPath('user.role', 'cashier')->assertJsonPath('tenant.id', $user->tenant_id);
+        $this->get('/app/team')->assertForbidden();
+        $this->assertGuest('developer');
+        $this->assertSame($tenantBefore, $user->tenant->fresh()->getAttributes());
+        $this->assertDatabaseCount('social_identities', 1);
+        $this->assertDatabaseCount('users', 1);
+        $this->assertDatabaseCount('tenants', 1);
+        Http::assertNothingSent();
+    }
+
     public function test_apple_post_stages_callback_without_exchanging_code_or_replacing_original_session_cookie(): void
     {
         $client = $this->client();

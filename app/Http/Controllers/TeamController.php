@@ -21,7 +21,7 @@ class TeamController extends Controller
         }
         $data = $request->validate([
             'name' => ['required', 'string', 'max:100'], 'email' => ['required', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:10', 'max:255'], 'role' => ['required', Rule::in(['admin', 'manager', 'cashier'])],
+            'password' => ['required', 'string', 'min:10', 'max:255', 'not_regex:/\x00/'], 'role' => ['required', Rule::in(['admin', 'manager', 'cashier'])],
         ]);
         $user = DB::transaction(function () use ($request, $data): User {
             $tenant = Tenant::whereKey($request->user()->tenant_id)->lockForUpdate()->firstOrFail();

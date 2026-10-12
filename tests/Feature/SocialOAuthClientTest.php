@@ -2,7 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use App\Services\SocialOAuthClient;
+use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -13,6 +15,8 @@ use Tests\TestCase;
 
 class SocialOAuthClientTest extends TestCase
 {
+    use LazilyRefreshDatabase;
+
     private array $temporaryFiles = [];
 
     protected function setUp(): void
@@ -107,6 +111,67 @@ class SocialOAuthClientTest extends TestCase
         Http::assertSentCount(2);
         $this->assertStringNotContainsString('private-access-token', json_encode($identity));
         $this->assertStringNotContainsString('private-refresh-token', json_encode($identity));
+    }
+
+    public function test_signed_google_registration_and_repeat_sign_in_open_the_same_administrator_workspace(): void
+    {
+        $this->freezeSecond();
+        [$key, $jwk] = $this->rsaKey();
+        $exchanges = Http::sequence();
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => $exchanges,
+            'https://www.googleapis.com/oauth2/v3/certs' => Http::response(['keys' => [$jwk]]),
+        ]);
+        $registrationStart = $this->get('/auth/google/redirect?intent=register&plan=grow')->assertRedirect();
+        $this->assertSame('accounts.google.com', parse_url($registrationStart->headers->get('Location'), PHP_URL_HOST));
+        $registrationFlow = $this->app['session']->get('social_auth.flow');
+        $exchanges->push(['id_token' => $this->token($key, $this->claims(['nonce' => $registrationFlow['nonce']])),
+            'access_token' => 'discarded-registration-access-token', 'refresh_token' => 'discarded-registration-refresh-token']);
+
+        $this->get('/auth/google/callback?'.http_build_query(['state' => $registrationFlow['state'], 'code' => 'registration-code']))
+            ->assertRedirect('/auth/register/complete');
+        $this->get('/auth/register/complete')->assertOk()->assertSee('owner@example.com');
+        $this->post('/auth/register/complete', ['business_name' => 'Signed Google Corner Store', 'name' => 'Owner', 'plan' => 'grow'])
+            ->assertRedirect('/app');
+        $user = User::firstOrFail();
+        $this->getJson('/api/bootstrap')->assertOk()->assertJsonPath('user.id', $user->id)
+            ->assertJsonPath('user.role', 'admin')->assertJsonPath('tenant.id', $user->tenant_id);
+        $this->assertAuthenticatedAs($user, 'web');
+        $this->assertGuest('developer');
+        $tenantBefore = $user->tenant->fresh()->getAttributes();
+        $subscriptionBefore = $user->tenant->subscription->getAttributes();
+        $this->post('/logout')->assertRedirect('/');
+        $this->assertGuest('web');
+        $loginStart = $this->get('/auth/google/redirect?intent=login&plan=starter')->assertRedirect();
+        $this->assertSame('accounts.google.com', parse_url($loginStart->headers->get('Location'), PHP_URL_HOST));
+        $loginFlow = $this->app['session']->get('social_auth.flow');
+        $exchanges->push(['id_token' => $this->token($key, $this->claims(['nonce' => $loginFlow['nonce'], 'email' => 'changed@example.com']))]);
+
+        $this->get('/auth/google/callback?'.http_build_query(['state' => $loginFlow['state'], 'code' => 'repeat-login-code']))
+            ->assertRedirect('/app');
+
+        $this->getJson('/api/bootstrap')->assertOk()->assertJsonPath('user.id', $user->id)
+            ->assertJsonPath('user.role', 'admin')->assertJsonPath('tenant.id', $user->tenant_id);
+        $this->assertAuthenticatedAs($user, 'web');
+        $this->assertGuest('developer');
+        $this->assertNotSame($registrationFlow['state'], $loginFlow['state']);
+        $this->assertSame('owner@example.com', $user->fresh()->email);
+        $this->assertSame($tenantBefore, $user->tenant->fresh()->getAttributes());
+        $this->assertSame($subscriptionBefore, $user->tenant->subscription->fresh()->getAttributes());
+        $this->assertDatabaseHas('social_identities', ['user_id' => $user->id, 'provider' => 'google', 'subject_hash' => hash('sha256', 'subject-123')]);
+        $this->assertDatabaseCount('users', 1);
+        $this->assertDatabaseCount('tenants', 1);
+        $this->assertDatabaseCount('locations', 1);
+        $this->assertDatabaseCount('subscriptions', 1);
+        $this->assertDatabaseCount('social_identities', 1);
+        $this->assertDatabaseCount('billing_invoices', 0);
+        $this->assertDatabaseCount('billing_payment_attempts', 0);
+        Http::assertSent(fn ($request) => $request->url() === 'https://oauth2.googleapis.com/token'
+            && $request['code'] === 'registration-code' && $request['code_verifier'] === $registrationFlow['code_verifier']);
+        Http::assertSent(fn ($request) => $request->url() === 'https://oauth2.googleapis.com/token'
+            && $request['code'] === 'repeat-login-code' && $request['code_verifier'] === $loginFlow['code_verifier']);
+        Http::assertSentCount(3);
     }
 
     #[DataProvider('invalidClaims')]

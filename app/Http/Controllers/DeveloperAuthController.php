@@ -22,7 +22,7 @@ class DeveloperAuthController extends Controller
     public function login(Request $request): RedirectResponse
     {
         $this->canonicalizeEmail($request);
-        $data = $request->validate(['email' => ['required', 'email', 'max:255'], 'password' => ['required', 'string', 'max:255']]);
+        $data = $request->validate(['email' => ['required', 'email', 'max:255'], 'password' => ['required', 'string', 'max:255', 'not_regex:/\x00/']]);
         if (! Auth::guard('developer')->attempt($data + ['is_active' => true])) {
             throw ValidationException::withMessages(['email' => 'The email or password is incorrect.']);
         }
@@ -54,7 +54,7 @@ class DeveloperAuthController extends Controller
         $this->canonicalizeEmail($request);
         $data = $request->validate(['email' => ['required', 'email', 'max:255'],
             'token' => ['required', 'string', 'size:64', 'regex:/^[a-f0-9]{64}$/D'],
-            'password' => ['required', 'string', 'min:12', 'max:255', 'confirmed']]);
+            'password' => ['required', 'string', 'min:12', 'max:255', 'not_regex:/\x00/', 'confirmed']]);
         DB::transaction(function () use ($data): void {
             $account = $this->pendingAccount($data['email'], $data['token'], true);
             if (! $account) {
