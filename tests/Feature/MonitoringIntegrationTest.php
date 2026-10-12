@@ -4,12 +4,15 @@ namespace Tests\Feature;
 
 use App\Jobs\CheckLowStock;
 use App\Jobs\MonitoringQueueProbe;
+use App\Models\BillingInvoice;
 use App\Models\MonitoringEvent;
+use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\MonitoringService;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -71,6 +74,96 @@ class MonitoringIntegrationTest extends TestCase
         $this->assertDatabaseHas('system_heartbeats', ['component' => 'worker', 'connection' => 'database', 'queue' => 'default']);
         $worker = collect($monitoring->systemReport()['checks'])->firstWhere('key', 'worker');
         $this->assertSame('healthy', $worker['status']);
+    }
+
+    public function test_database_worker_completes_the_requested_probe_and_replay_keeps_its_completion_and_company_records(): void
+    {
+        $this->freezeTime();
+        $user = $this->administrator();
+        $foreign = MonitoringEvent::factory()->pendingProbe()->create();
+        $subscription = Subscription::factory()->create(['tenant_id' => $user->tenant_id]);
+        $invoice = BillingInvoice::factory()->create(['subscription_id' => $subscription->id]);
+        $businessRecords = [$user->refresh()->getAttributes(), $user->tenant->getAttributes(), $subscription->refresh()->getAttributes(), $invoice->refresh()->getAttributes()];
+        config(['queue.default' => 'database', 'queue.connections.database.queue' => 'diagnostics']);
+        Storage::fake('local');
+
+        $response = $this->actingAs($user)->postJson('/api/monitoring/probe')->assertOk()
+            ->assertJsonPath('probe.status', 'pending')->assertJsonPath('reused', false);
+        $probeId = $response->json('probe.id');
+        $this->assertDatabaseHas('jobs', ['queue' => 'diagnostics', 'attempts' => 0]);
+        $this->assertDatabaseCount('jobs', 1);
+
+        $this->artisan('queue:work', ['connection' => 'database', '--queue' => 'diagnostics', '--max-jobs' => 1, '--stop-when-empty' => true, '--sleep' => 0])->assertSuccessful();
+
+        $this->getJson('/api/monitoring')->assertOk()->assertJsonPath('counts.passed_probes', 1)
+            ->assertJsonPath('counts.pending_probes', 0)->assertJsonPath('probes.0.id', $probeId)
+            ->assertJsonPath('probes.0.status', 'passed');
+        $this->assertDatabaseHas('system_heartbeats', ['component' => 'worker', 'connection' => 'database', 'queue' => 'diagnostics']);
+        $completed = MonitoringEvent::findOrFail($probeId)->getRawOriginal('completed_at');
+        $this->travel(5)->seconds();
+        Queue::push(new MonitoringQueueProbe($user->tenant_id, $probeId));
+        $this->artisan('queue:work', ['connection' => 'database', '--queue' => 'diagnostics', '--once' => true, '--sleep' => 0])->assertSuccessful();
+
+        $this->assertDatabaseHas('monitoring_events', ['id' => $probeId, 'status' => 'passed', 'completed_at' => $completed, 'pending_scope' => null]);
+        $this->assertSame('pending', $foreign->refresh()->status);
+        $this->assertNull($foreign->completed_at);
+        $this->assertSame($businessRecords, [$user->refresh()->getAttributes(), $user->tenant->refresh()->getAttributes(), $subscription->refresh()->getAttributes(), $invoice->refresh()->getAttributes()]);
+        $this->assertDatabaseCount('jobs', 0);
+        $this->assertDatabaseCount('failed_jobs', 0);
+    }
+
+    public function test_real_worker_failure_records_one_safe_incident_and_a_new_probe_recovers_after_cooldown(): void
+    {
+        $this->freezeTime();
+        $user = $this->administrator();
+        $foreign = MonitoringEvent::factory()->pendingProbe()->create();
+        config(['queue.default' => 'database']);
+        Storage::fake('local');
+        Exceptions::fake();
+        $error = new RuntimeException('password=private-worker-value');
+        $event = JobProcessing::class;
+        Event::listen($event, function (JobProcessing $processing) use ($error): void {
+            if ($processing->job->resolveName() === MonitoringQueueProbe::class) {
+                throw $error;
+            }
+        });
+
+        $response = $this->actingAs($user)->postJson('/api/monitoring/probe')->assertOk()->assertJsonPath('probe.status', 'pending');
+        $probeId = $response->json('probe.id');
+        try {
+            $this->artisan('queue:work', ['connection' => 'database', '--once' => true, '--sleep' => 0])->assertSuccessful();
+        } finally {
+            Event::forget($event);
+        }
+
+        Exceptions::assertReported(fn (RuntimeException $reported): bool => $reported === $error);
+        $failed = MonitoringEvent::findOrFail($probeId);
+        $completed = $failed->getRawOriginal('completed_at');
+        $this->assertSame('failed', $failed->status);
+        $this->assertNotNull($completed);
+        $this->assertNull($failed->pending_scope);
+        $this->assertDatabaseCount('jobs', 0);
+        $this->assertDatabaseCount('failed_jobs', 1);
+        $this->getJson('/api/monitoring')->assertOk()->assertJsonPath('counts.open_incidents', 1)
+            ->assertJsonPath('counts.failed_probes', 1)->assertJsonMissingPath('incidents.0.exception');
+        $this->assertStringNotContainsString('private-worker-value', MonitoringEvent::all()->toJson());
+
+        $this->artisan('queue:retry', ['id' => [DB::table('failed_jobs')->value('uuid')]])->assertSuccessful();
+        $this->artisan('queue:work', ['connection' => 'database', '--once' => true, '--sleep' => 0])->assertSuccessful();
+        $this->assertDatabaseHas('monitoring_events', ['id' => $probeId, 'status' => 'failed', 'completed_at' => $completed]);
+        $this->assertSame(1, MonitoringEvent::where('tenant_id', $user->tenant_id)->where('kind', 'queue_failure')->count());
+        $this->postJson('/api/monitoring/probe')->assertTooManyRequests()->assertJsonPath('retry_after', 60);
+        $this->travel(60)->seconds();
+
+        $fresh = $this->postJson('/api/monitoring/probe')->assertOk()->assertJsonPath('probe.status', 'pending')->assertJsonPath('reused', false);
+        $this->artisan('queue:work', ['connection' => 'database', '--once' => true, '--sleep' => 0])->assertSuccessful();
+
+        $this->assertNotSame($probeId, $fresh->json('probe.id'));
+        $this->assertDatabaseHas('monitoring_events', ['id' => $fresh->json('probe.id'), 'status' => 'passed', 'pending_scope' => null]);
+        $this->assertSame('pending', $foreign->refresh()->status);
+        $this->assertNull($foreign->completed_at);
+        $this->assertDatabaseCount('jobs', 0);
+        $this->assertDatabaseCount('failed_jobs', 0);
     }
 
     public function test_scheduler_registration_has_no_pulse_until_its_scheduled_callback_actually_runs(): void
@@ -149,14 +242,20 @@ class MonitoringIntegrationTest extends TestCase
         $user = $this->administrator();
         $old = MonitoringEvent::factory()->create(['tenant_id' => $user->tenant_id, 'created_at' => now()->subDays(31)]);
         $recent = MonitoringEvent::factory()->create(['tenant_id' => $user->tenant_id]);
+        $pending = MonitoringEvent::factory()->pendingProbe()->create(['tenant_id' => $user->tenant_id, 'created_at' => now()->subDays(31)]);
+        $subscription = Subscription::factory()->create(['tenant_id' => $user->tenant_id, 'created_at' => now()->subDays(31)]);
+        $invoice = BillingInvoice::factory()->create(['subscription_id' => $subscription->id, 'created_at' => now()->subDays(31)]);
+        $billingRecords = [$subscription->refresh()->getAttributes(), $invoice->refresh()->getAttributes()];
         config(['monitoring.retention_days' => 30]);
 
         $this->artisan('monitoring:prune')->expectsOutput('Removed 1 expired monitoring records. Business records were kept.')->assertSuccessful();
 
         $this->assertModelMissing($old);
         $this->assertModelExists($recent);
+        $this->assertModelExists($pending);
         $this->assertModelExists($user);
         $this->assertDatabaseCount('tenants', 1);
+        $this->assertSame($billingRecords, [$subscription->refresh()->getAttributes(), $invoice->refresh()->getAttributes()]);
     }
 
     public function test_health_refreshes_do_not_consume_the_separate_diagnostic_request_limit(): void

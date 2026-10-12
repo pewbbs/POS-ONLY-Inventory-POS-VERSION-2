@@ -23,6 +23,7 @@ use Illuminate\Support\Facades\Storage;
 use Mockery;
 use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -330,6 +331,70 @@ class MonitoringServiceTest extends TestCase
         $this->assertSame('critical', $checks['log_storage']['status']);
         $this->assertStringNotContainsString('password=secret', json_encode($report, JSON_THROW_ON_ERROR));
         $this->assertStringNotContainsString(storage_path(), json_encode($report, JSON_THROW_ON_ERROR));
+    }
+
+    #[TestWith([true])]
+    #[TestWith([false])]
+    public function test_cache_corrupt_reads_or_failed_deletes_are_critical_and_attempt_temporary_key_cleanup(bool $corruptRead): void
+    {
+        $this->administrator();
+        Storage::fake('local');
+        config(['queue.default' => 'sync']);
+        $probeKey = null;
+        $probeValue = null;
+        Cache::shouldReceive('put')->once()->andReturnUsing(function (string $key, string $value, int $seconds) use (&$probeKey, &$probeValue): bool {
+            $probeKey = $key;
+            $probeValue = $value;
+
+            return str_starts_with($key, 'monitoring:probe:') && $seconds === 30;
+        });
+        $matchesProbeKey = function (string $key) use (&$probeKey): bool {
+            return $key === $probeKey;
+        };
+        Cache::shouldReceive('get')->once()->with(Mockery::on($matchesProbeKey))
+            ->andReturnUsing(function () use ($corruptRead, &$probeValue): string {
+                return $corruptRead ? 'Corrupted cache value' : $probeValue;
+            });
+        Cache::shouldReceive('forget')->times($corruptRead ? 1 : 2)
+            ->with(Mockery::on($matchesProbeKey))->andReturn(false);
+
+        $report = app(MonitoringService::class)->systemReport();
+
+        $this->assertSame('critical', $report['status']);
+        $this->assertSame('critical', $this->checks($report)['cache']['status']);
+        $this->assertStringNotContainsString($probeKey, json_encode($report, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('Corrupted cache value', json_encode($report, JSON_THROW_ON_ERROR));
+        Storage::disk('local')->assertDirectoryEmpty('monitoring');
+    }
+
+    #[TestWith([true])]
+    #[TestWith([false])]
+    public function test_private_storage_corrupt_reads_or_failed_deletes_are_critical_and_attempt_temporary_file_cleanup(bool $corruptRead): void
+    {
+        $this->administrator();
+        config(['queue.default' => 'sync']);
+        $probePath = null;
+        $disk = Mockery::mock(FilesystemAdapter::class);
+        $disk->shouldReceive('put')->once()->with(Mockery::on(function (string $path) use (&$probePath): bool {
+            $probePath = $path;
+
+            return str_starts_with($path, 'monitoring/.probe-');
+        }), 'POSONLY diagnostic')->andReturn(true);
+        $matchesProbePath = function (string $path) use (&$probePath): bool {
+            return $path === $probePath;
+        };
+        $disk->shouldReceive('get')->once()->with(Mockery::on($matchesProbePath))
+            ->andReturn($corruptRead ? 'Corrupted private file' : 'POSONLY diagnostic');
+        $disk->shouldReceive('delete')->times($corruptRead ? 1 : 2)
+            ->with(Mockery::on($matchesProbePath))->andReturn(false);
+        Storage::shouldReceive('disk')->once()->with('local')->andReturn($disk);
+
+        $report = app(MonitoringService::class)->systemReport();
+
+        $this->assertSame('critical', $report['status']);
+        $this->assertSame('critical', $this->checks($report)['private_storage']['status']);
+        $this->assertStringNotContainsString($probePath, json_encode($report, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('Corrupted private file', json_encode($report, JSON_THROW_ON_ERROR));
     }
 
     public function test_simulation_labels_never_claim_external_provider_connectivity_and_disable_outside_local(): void
