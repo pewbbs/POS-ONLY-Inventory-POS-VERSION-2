@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\CommerceService;
 use App\Services\InventoryService;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use PHPUnit\Framework\Attributes\TestWith;
 use Tests\TestCase;
 
 class CrossChannelStockGuardTest extends TestCase
@@ -291,5 +292,109 @@ class CrossChannelStockGuardTest extends TestCase
         $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 10, 'reserved_quantity' => 8]);
         $this->assertDatabaseCount('sales', 0);
         $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_variant_reservations_follow_their_sku_and_location_through_sales_transfers_receiving_and_returns(): void
+    {
+        $store = $this->store(10, 0);
+        $destination = Location::factory()->create(['tenant_id' => $store['tenant']->id]);
+        $this->actingAs($store['user'])->postJson('/api/product-families', [
+            'name' => 'Cotton shirt', 'option_names' => ['size', 'color'], 'category' => 'Apparel',
+            'price' => 100, 'cost' => 40, 'reorder_level' => 0, 'location_id' => $store['location']->id,
+            'idempotency_key' => 'channel-variant-family', 'variants' => [
+                ['sku' => 'SHIRT-S-RED', 'options' => ['size' => 'S', 'color' => 'Red'], 'quantity' => 10],
+                ['sku' => 'SHIRT-M-BLUE', 'options' => ['size' => 'M', 'color' => 'Blue'], 'quantity' => 6],
+            ],
+        ])->assertCreated();
+        $red = Product::where('tenant_id', $store['tenant']->id)->where('sku', 'SHIRT-S-RED')->firstOrFail();
+        $blue = Product::where('tenant_id', $store['tenant']->id)->where('sku', 'SHIRT-M-BLUE')->firstOrFail();
+        $first = $this->channel($store, 'Variant web store');
+        $second = $this->channel($store, 'Variant marketplace');
+        $destinationChannel = $this->channel($store, 'Variant destination', $destination->id);
+        $firstOrder = $this->postJson('/api/commerce/channels/'.$first->id.'/orders', [
+            'external_reference' => 'VARIANT-WEB-1', 'idempotency_key' => 'variant-web-order',
+            'items' => [['sku' => $red->sku, 'quantity' => 7], ['sku' => $blue->sku, 'quantity' => 4]],
+        ])->assertCreated()->json('id');
+        $secondOrder = $this->postJson('/api/commerce/channels/'.$second->id.'/orders', [
+            'external_reference' => 'VARIANT-MARKET-1', 'idempotency_key' => 'variant-market-order',
+            'items' => [['sku' => $red->sku, 'quantity' => 2]],
+        ])->assertCreated()->json('id');
+        $this->assertPublished($first, $red, 1);
+        $this->assertPublished($second, $red, 1);
+        $this->assertPublished($first, $blue, 2);
+        $this->assertPublished($destinationChannel, $red, 0);
+        $sale = ['location_id' => $store['location']->id, 'items' => [['product_id' => $red->id, 'quantity' => 2]],
+            'payments' => [['method' => 'cash', 'amount' => 1000]], 'idempotency_key' => 'variant-pos-checkout'];
+
+        $this->postJson('/api/sales', $sale)->assertUnprocessable()->assertJsonValidationErrors('items');
+        $this->postJson('/api/sales', array_replace($sale, ['location_id' => $destination->id, 'items' => [['product_id' => $red->id, 'quantity' => 1]]]))->assertUnprocessable();
+        $this->postJson('/api/sales', array_replace($sale, ['items' => [['product_id' => $red->id, 'quantity' => 1], ['product_id' => $blue->id, 'quantity' => 1]]]))->assertCreated();
+        $transfer = ['product_id' => $blue->id, 'from_location_id' => $store['location']->id, 'to_location_id' => $destination->id, 'quantity' => 1];
+        $this->postJson('/api/transfers', $transfer)->assertOk();
+        $this->postJson('/api/transfers', array_replace($transfer, ['product_id' => $red->id]))->assertUnprocessable();
+        $this->assertPublished($first, $red, 0);
+        $this->assertPublished($second, $blue, 0);
+        $this->assertPublished($destinationChannel, $blue, 1);
+        $supplier = Supplier::factory()->create(['tenant_id' => $store['tenant']->id]);
+        $purchase = $this->postJson('/api/purchase-orders', [
+            'supplier_id' => $supplier->id, 'location_id' => $store['location']->id,
+            'items' => [['product_id' => $red->id, 'quantity' => 3], ['product_id' => $blue->id, 'quantity' => 2]],
+        ])->assertCreated()->json('id');
+        $this->postJson('/api/purchase-orders/'.$purchase.'/receive')->assertOk();
+        $this->assertPublished($first, $red, 3);
+        $this->assertPublished($second, $blue, 2);
+        $imported = $this->postJson('/api/commerce/orders/'.$firstOrder.'/import')->assertOk()->assertJsonPath('status', 'imported');
+        $this->postJson('/api/commerce/orders/'.$firstOrder.'/import')->assertOk()->assertJsonPath('sale_id', $imported->json('sale_id'));
+        $return = ['items' => [['product_id' => $red->id, 'quantity' => 2], ['product_id' => $blue->id, 'quantity' => 1]],
+            'reason' => 'Sellable variant returns', 'idempotency_key' => 'variant-channel-return'];
+        $this->postJson('/api/sales/'.$imported->json('sale_id').'/return', $return)->assertOk()->assertJsonPath('status', 'partially_returned');
+        $this->postJson('/api/sales/'.$imported->json('sale_id').'/return', $return)->assertOk();
+        $this->assertPublished($first, $red, 5);
+        $this->assertPublished($second, $red, 5);
+        $this->assertPublished($first, $blue, 3);
+        $this->postJson('/api/commerce/orders/'.$secondOrder.'/cancel')->assertOk()->assertJsonPath('status', 'canceled');
+
+        $this->assertPublished($first, $red, 7);
+        $this->assertPublished($second, $red, 7);
+        $this->assertPublished($destinationChannel, $blue, 1);
+        $this->assertDatabaseHas('stocks', ['product_id' => $red->id, 'location_id' => $store['location']->id, 'quantity' => 7, 'reserved_quantity' => 0]);
+        $this->assertDatabaseHas('stocks', ['product_id' => $blue->id, 'location_id' => $store['location']->id, 'quantity' => 3, 'reserved_quantity' => 0]);
+        $this->assertDatabaseHas('stocks', ['product_id' => $blue->id, 'location_id' => $destination->id, 'quantity' => 1, 'reserved_quantity' => 0]);
+        $this->assertDatabaseHas('stocks', ['product_id' => $red->id, 'location_id' => $destination->id, 'quantity' => 0, 'reserved_quantity' => 0]);
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 10, 'reserved_quantity' => 0]);
+        $this->assertDatabaseCount('sales', 2);
+        $this->assertDatabaseCount('sale_returns', 1);
+        $this->assertDatabaseCount('channel_orders', 2);
+    }
+
+    #[TestWith(['cashier', true])]
+    #[TestWith(['manager', false])]
+    public function test_revoked_channel_access_returns_403_without_releasing_pending_orders_or_changing_published_stock(string $role, bool $isActive): void
+    {
+        $store = $this->store(10, 0);
+        $channel = $this->channel($store);
+        $order = app(CommerceService::class)->createOrder($store['user'], $channel->id, [
+            'external_reference' => 'REVOKED-ORDER', 'idempotency_key' => 'revoked-channel-order',
+            'items' => [['sku' => $store['product']->sku, 'quantity' => 8]],
+        ]);
+        User::whereKey($store['user']->id)->update(['role' => $role, 'is_active' => $isActive]);
+
+        $this->actingAs($store['user'])->getJson('/api/commerce')->assertForbidden();
+        $this->actingAs($store['user'])->patchJson('/api/commerce/channels/'.$channel->id, ['name' => 'Unapproved change'])->assertForbidden();
+        foreach (['pause', 'resume', 'sync'] as $action) {
+            $this->actingAs($store['user'])->postJson('/api/commerce/channels/'.$channel->id.'/'.$action, ['idempotency_key' => 'revoked-sync-attempt'])->assertForbidden();
+        }
+        foreach (['import', 'cancel'] as $action) {
+            $this->actingAs($store['user'])->postJson('/api/commerce/orders/'.$order->id.'/'.$action)->assertForbidden();
+        }
+
+        $this->assertPublished($channel, $store['product'], 2);
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 10, 'reserved_quantity' => 8]);
+        $this->assertDatabaseHas('commerce_channels', ['id' => $channel->id, 'name' => 'Sample web store', 'enabled' => true, 'sync_state' => 'synced']);
+        $this->assertDatabaseHas('channel_orders', ['id' => $order->id, 'status' => 'pending', 'sale_id' => null]);
+        $this->assertDatabaseCount('sales', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+        $this->assertDatabaseCount('channel_syncs', 0);
+        $this->assertDatabaseCount('activity_logs', 0);
     }
 }

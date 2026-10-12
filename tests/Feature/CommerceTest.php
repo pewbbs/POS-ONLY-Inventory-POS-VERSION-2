@@ -414,6 +414,77 @@ class CommerceTest extends TestCase
         $this->assertDatabaseCount('stock_movements', 0);
     }
 
+    public function test_failed_import_recovers_after_stock_correction_without_releasing_another_orders_units(): void
+    {
+        $store = $this->store();
+        $store['product']->update(['cost_cents' => 3500]);
+        $second = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'sku' => 'ZZ-RECOVERY', 'price_cents' => 5000, 'cost_cents' => 2000]);
+        $secondStock = Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'location_id' => $store['location']->id, 'product_id' => $second->id, 'quantity' => 10]);
+        $channel = $this->channel($store);
+        $data = $this->orderData($store);
+        $data['items'][] = ['sku' => $second->sku, 'quantity' => 2];
+        $order = $this->postJson('/api/commerce/channels/'.$channel.'/orders', $data)->assertCreated()->json('id');
+        $pending = $this->postJson('/api/commerce/channels/'.$channel.'/orders', $this->orderData($store, 3, 'KEEP-RESERVED', 'keep-reserved-order'))->assertCreated()->json('id');
+        $secondStock->update(['quantity' => 1]);
+        $second->update(['price_cents' => 9000, 'cost_cents' => 8000]);
+        $store['tenant']->update(['settings' => array_replace(Tenant::defaultSettings(), ['tax_percent' => 20])]);
+
+        $this->postJson('/api/commerce/orders/'.$order.'/import')->assertUnprocessable()->assertJsonValidationErrors('items');
+
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 10, 'reserved_quantity' => 5]);
+        $this->assertDatabaseHas('stocks', ['id' => $secondStock->id, 'quantity' => 1, 'reserved_quantity' => 2]);
+        $this->assertDatabaseHas('channel_orders', ['id' => $order, 'status' => 'pending', 'sale_id' => null]);
+        $this->assertDatabaseCount('sales', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+
+        $this->postJson('/api/products/'.$second->id.'/adjust', ['location_id' => $store['location']->id, 'quantity' => 1, 'reason' => 'Corrected stock before order retry'])->assertOk();
+        $imported = $this->postJson('/api/commerce/orders/'.$order.'/import')->assertOk()->assertJsonPath('status', 'imported')->assertJsonPath('total', 336);
+        $this->postJson('/api/commerce/orders/'.$order.'/import')->assertOk()->assertJsonPath('sale_id', $imported->json('sale_id'));
+
+        $sale = Sale::findOrFail($imported->json('sale_id'));
+        $this->assertSame(12.0, (float) $sale->tax_percent);
+        $this->assertSame([3500, 2000], array_column($sale->items, 'unit_cost_cents'));
+        $this->assertSame([10000, 5000], array_column($sale->items, 'unit_price_cents'));
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 8, 'reserved_quantity' => 3]);
+        $this->assertDatabaseHas('stocks', ['id' => $secondStock->id, 'quantity' => 0, 'reserved_quantity' => 0]);
+        $this->assertDatabaseHas('channel_orders', ['id' => $pending, 'status' => 'pending', 'sale_id' => null]);
+        $this->assertDatabaseHas('channel_listings', ['commerce_channel_id' => $channel, 'product_id' => $store['product']->id, 'published_quantity' => 5]);
+        $this->assertDatabaseHas('channel_listings', ['commerce_channel_id' => $channel, 'product_id' => $second->id, 'published_quantity' => 0]);
+        $this->assertDatabaseCount('sales', 1);
+        $this->assertDatabaseCount('stock_movements', 3);
+    }
+
+    public function test_cancel_reservation_conflict_rolls_back_prior_releases_and_retry_releases_once(): void
+    {
+        $store = $this->store();
+        $second = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'sku' => 'ZZ-CANCEL-CONFLICT']);
+        $secondStock = Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'location_id' => $store['location']->id, 'product_id' => $second->id, 'quantity' => 10]);
+        $channel = $this->channel($store);
+        $data = $this->orderData($store);
+        $data['items'][] = ['sku' => $second->sku, 'quantity' => 2];
+        $order = $this->postJson('/api/commerce/channels/'.$channel.'/orders', $data)->assertCreated()->json('id');
+        $secondStock->update(['reserved_quantity' => 1]);
+
+        $this->postJson('/api/commerce/orders/'.$order.'/cancel')->assertConflict()->assertJsonPath('message', 'The reservation changed. Refresh before processing this order.');
+
+        $this->assertDatabaseHas('channel_orders', ['id' => $order, 'status' => 'pending', 'canceled_at' => null]);
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 10, 'reserved_quantity' => 2]);
+        $this->assertDatabaseHas('stocks', ['id' => $secondStock->id, 'quantity' => 10, 'reserved_quantity' => 1]);
+        $this->assertDatabaseHas('channel_listings', ['commerce_channel_id' => $channel, 'product_id' => $store['product']->id, 'published_quantity' => 8]);
+        $this->assertDatabaseCount('sales', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+
+        $secondStock->update(['reserved_quantity' => 2]);
+        $this->postJson('/api/commerce/orders/'.$order.'/cancel')->assertOk()->assertJsonPath('status', 'canceled');
+        $this->postJson('/api/commerce/orders/'.$order.'/cancel')->assertOk()->assertJsonPath('status', 'canceled');
+
+        $this->assertDatabaseHas('stocks', ['id' => $store['stock']->id, 'quantity' => 10, 'reserved_quantity' => 0]);
+        $this->assertDatabaseHas('stocks', ['id' => $secondStock->id, 'quantity' => 10, 'reserved_quantity' => 0]);
+        $this->assertDatabaseHas('channel_listings', ['commerce_channel_id' => $channel, 'product_id' => $second->id, 'published_quantity' => 10]);
+        $this->assertDatabaseCount('channel_orders', 1);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     public function test_case_insensitive_sku_aliases_cannot_reserve_the_same_product_twice(): void
     {
         $store = $this->store();
