@@ -69,6 +69,25 @@ class WholesalePricingTest extends TestCase
         $this->assertDatabaseHas('stocks', ['product_id' => $store['product']->id, 'quantity' => 8]);
     }
 
+    public function test_later_item_without_a_wholesale_price_rejects_the_entire_cart_without_deducting_the_priced_item(): void
+    {
+        $store = $this->store();
+        $missingPrice = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'name' => 'Retail only tote', 'wholesale_price_cents' => null]);
+        $missingStock = Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $missingPrice->id, 'location_id' => $store['location']->id, 'quantity' => 7]);
+        $payload = $this->checkout($store, ['price_tier' => 'wholesale', 'items' => [
+            ['product_id' => $store['product']->id, 'quantity' => 2],
+            ['product_id' => $missingPrice->id, 'quantity' => 1],
+        ]]);
+
+        $this->actingAs($store['user'])->postJson('/api/sales', $payload)->assertUnprocessable()->assertJsonValidationErrors('items')
+            ->assertJsonPath('errors.items.0', 'Set a wholesale price for Retail only tote or use retail pricing.');
+
+        $this->assertDatabaseCount('sales', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+        $this->assertDatabaseHas('stocks', ['product_id' => $store['product']->id, 'location_id' => $store['location']->id, 'quantity' => 10]);
+        $this->assertDatabaseHas('stocks', ['id' => $missingStock->id, 'quantity' => 7]);
+    }
+
     public function test_checkout_tier_is_bound_to_idempotency_key_and_catalog_edit_does_not_change_replay(): void
     {
         $store = $this->store();

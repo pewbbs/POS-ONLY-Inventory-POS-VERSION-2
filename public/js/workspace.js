@@ -2446,14 +2446,14 @@
             const exactMatches = query ? products().filter(product => [product.barcode, product.sku].some(value => value && String(value).trim() === query)) : [];
             const insensitiveMatches = !exactMatches.length && query ? products().filter(product => [product.barcode, product.sku].some(value => value && String(value).trim().toLowerCase() === query.toLowerCase())) : exactMatches;
             if (insensitiveMatches.length > 1) { toast('This code matches more than one SKU. Select the exact product or use a unique barcode.', true); return; }
-            const product = insensitiveMatches[0] || (query && filteredProducts().length === 1 ? filteredProducts()[0] : null);
+            const product = insensitiveMatches[0];
             if (product) {
                 if (!canWrite() || !hasTierPrice(product)) { toast(!canWrite() ? 'Sales are paused. Review Billing & plans.' : 'This product has no wholesale price.', true); return; }
                 const item = state.cart.find(item => item.product_id === number(product.id));
                 if (availableStock(product) <= number(item?.quantity)) { toast('This product has no unreserved stock available.', true); return; }
                 if (item) { item.quantity += 1; } else { state.cart.push({product_id: number(product.id), quantity: 1}); }
                 state.search = ''; state.saleKey = null; renderSection(); document.getElementById('workspace-search').focus(); toast(`${product.name} added.`);
-            } else { toast('No matching barcode. Try the product name or SKU.', true); }
+            } else { toast('No exact barcode or SKU match. Search by name and tap the product to add it.', true); }
         }
     });
 

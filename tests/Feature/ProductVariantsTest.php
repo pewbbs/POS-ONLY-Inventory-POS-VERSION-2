@@ -12,9 +12,13 @@ use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\ProductVariantService;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Exceptions;
+use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\TestWith;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
@@ -143,6 +147,74 @@ class ProductVariantsTest extends TestCase
         $this->assertDatabaseHas('stocks', ['product_id' => $first['products'][0]['id'], 'location_id' => $store['location']->id, 'quantity' => 4]);
         $this->assertDatabaseHas('stocks', ['product_id' => $family['products'][0]['id'], 'location_id' => $store['location']->id, 'quantity' => 8]);
         $this->assertDatabaseCount('products', 3);
+    }
+
+    #[TestWith([false])]
+    #[TestWith([true])]
+    public function test_late_batch_failure_rolls_back_catalog_stock_and_channel_changes_before_same_key_retry(bool $append): void
+    {
+        $store = $this->store();
+        $channel = CommerceChannel::factory()->create(['tenant_id' => $store['tenant']->id, 'location_id' => $store['location']->id, 'user_id' => $store['actor']->id]);
+        $family = $append ? $this->createFamily($store) : null;
+        $payload = $append ? $this->appendData($store) : $this->familyData($store);
+        $endpoint = $append ? '/api/product-families/'.$family['id'].'/variants' : '/api/product-families';
+        $tables = ['product_families', 'product_variant_batches', 'products', 'stocks', 'stock_movements', 'channel_listings'];
+        $before = collect($tables)->mapWithKeys(fn (string $table): array => [$table => DB::table($table)->orderBy('id')->get()->toJson()])->all();
+        config(['queue.default' => 'database']);
+        Http::preventStrayRequests();
+        Exceptions::fake();
+        DB::unprepared("CREATE TEMP TRIGGER reject_variant_batch BEFORE INSERT ON product_variant_batches
+            BEGIN SELECT RAISE(ABORT, 'Isolated variant batch failure'); END");
+
+        try {
+            $this->actingAs($store['actor'])->postJson($endpoint, $payload)->assertInternalServerError();
+            foreach ($tables as $table) {
+                $this->assertSame($before[$table], DB::table($table)->orderBy('id')->get()->toJson(), $table.' changed after the failed variant batch.');
+            }
+            $this->assertDatabaseCount('jobs', 0);
+        } finally {
+            DB::unprepared('DROP TRIGGER reject_variant_batch');
+        }
+
+        $created = $this->postJson($endpoint, $payload)->assertCreated();
+        $this->postJson($endpoint, $payload)->assertCreated()->assertJsonPath('id', $created->json('id'));
+        $product = collect($created->json('products'))->firstWhere('sku', $append ? 'TEE-L-BLUE' : 'TEE-S-BLACK');
+        $this->assertDatabaseHas('stocks', ['product_id' => $product['id'], 'location_id' => $store['location']->id, 'quantity' => $append ? 4 : 5]);
+        $this->assertDatabaseHas('channel_listings', ['commerce_channel_id' => $channel->id, 'product_id' => $product['id'], 'published_quantity' => $append ? 4 : 5]);
+        $this->assertDatabaseCount('products', $append ? 3 : 2);
+        $this->assertDatabaseCount('product_families', 1);
+        $this->assertDatabaseCount('product_variant_batches', $append ? 2 : 1);
+        $this->assertDatabaseCount('stock_movements', $append ? 3 : 2);
+        $this->assertDatabaseCount('jobs', 1);
+        Exceptions::assertReported(QueryException::class);
+        Http::assertNothingSent();
+    }
+
+    public function test_explicit_null_wholesale_override_does_not_inherit_family_price_on_create_or_append(): void
+    {
+        $store = $this->store();
+        $payload = $this->familyData($store);
+        $payload['variants'][0]['wholesale_price'] = null;
+
+        $family = $this->actingAs($store['actor'])->postJson('/api/product-families', $payload)->assertCreated()->json();
+        $small = collect($family['products'])->firstWhere('sku', 'TEE-S-BLACK');
+        $this->assertNull($small['wholesale_price']);
+        $appended = $this->appendData($store);
+        $appended['variants'][0]['wholesale_price'] = null;
+        $large = $this->postJson('/api/product-families/'.$family['id'].'/variants', $appended)->assertCreated()
+            ->assertJsonPath('default_values.wholesale_price', 450)->assertJsonPath('products.0.wholesale_price', null)->json('products.0');
+        foreach ([$small, $large] as $index => $product) {
+            $this->postJson('/api/sales', [
+                'location_id' => $store['location']->id, 'price_tier' => 'wholesale', 'items' => [['product_id' => $product['id'], 'quantity' => 1]],
+                'payments' => [['method' => 'cash', 'amount' => 1000]], 'idempotency_key' => 'missing-variant-price-'.$index,
+            ])->assertUnprocessable()->assertJsonValidationErrors('items');
+        }
+
+        $this->assertDatabaseHas('products', ['id' => $small['id'], 'wholesale_price_cents' => null]);
+        $this->assertDatabaseHas('products', ['id' => $large['id'], 'wholesale_price_cents' => null]);
+        $this->assertDatabaseHas('stocks', ['product_id' => $small['id'], 'quantity' => 5]);
+        $this->assertDatabaseHas('stocks', ['product_id' => $large['id'], 'quantity' => 4]);
+        $this->assertDatabaseCount('sales', 0);
     }
 
     #[TestWith([['color']])]
