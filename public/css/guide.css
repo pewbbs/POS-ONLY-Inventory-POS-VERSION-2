@@ -173,3 +173,5 @@ code { font-size:.9em; }
     .hardware-list p { grid-column:2; }
     @page { margin:17mm; }
 }
+
+main[tabindex="-1"]:focus { outline:none; }

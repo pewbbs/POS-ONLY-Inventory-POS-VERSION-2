@@ -27,7 +27,7 @@
     <nav class="desktop-nav" id="main-navigation" aria-label="Main navigation"><a href="#product">The product</a><a href="#business">Made for you</a><a href="#pricing">Pricing</a><a href="/guide">User guide</a>@if($companySignedIn)<a class="mobile-workspace-link" href="{{ $workspaceUrl }}">Back to workspace</a>@else<a class="mobile-login-link" href="{{ route('login', [], false) }}">Log in</a>@endif</nav>
     <div class="header-actions">@if($companySignedIn)<a class="button button-dark button-small" href="{{ $workspaceUrl }}">Back to workspace</a>@else<a class="login-link" href="{{ route('login', [], false) }}">Log in</a>@if($workspaceDemoEnabled)<form method="POST" action="{{ route('demo', [], false) }}">@csrf<button class="button button-dark button-small" type="submit">Try live demo</button></form>@else<a class="button button-dark button-small" href="{{ route('register', [], false) }}">Create workspace</a>@endif @endif<button class="menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="main-navigation">☰</button></div>
 </header>
-<main id="main">
+<main id="main" tabindex="-1">
 @if($draftPreview)
 <aside class="cms-preview-note" role="status">Website draft preview · Your published page is unchanged. <a href="{{ route('developer', ['section' => 'content']) }}">Return to content editor</a></aside>
 @endif
@@ -48,15 +48,15 @@
             <div class="device-content">
                 <aside class="mini-sidebar"><strong>P<span>.</span></strong><span class="mini-active">▦</span><span>⌗</span><span>▤</span><span><svg width="1em" height="1em" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 14h4v7H3zm7-5h4v12h-4zm7-6h4v18h-4z"/></svg></span><span class="mini-avatar">JD</span></aside>
                 <div class="mini-dashboard">
-                    <div class="mini-toolbar"><span>Overview</span><span class="mini-location">● Manila store ⌄</span></div>
-                    <div class="mini-heading"><div><small>LET’S MAKE TODAY A GOOD ONE</small><h3>Hey, Jamie</h3></div><span class="mini-date">TODAY</span></div>
+                    <div class="mini-toolbar"><span>Workspace</span><span class="mini-location">● Manila store ⌄</span></div>
+                    <div class="mini-heading"><div><h3>Overview</h3></div><span class="mini-date">TODAY</span></div>
                     <div class="mini-stats"><div><small>Today’s sales</small><strong>₱12,840<span>.00</span></strong><em>Sample store data</em></div><div><small>Items sold</small><strong>48</strong><em>Across 18 orders</em></div><div><small>Low stock</small><strong class="rust">3 <span>items</span></strong><em>Let’s restock</em></div></div>
                     <div class="mini-chart"><div><strong>Sales at a glance</strong><span>This week ⌄</span></div><svg viewBox="0 0 380 125" aria-hidden="true"><defs><linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ad4434" stop-opacity=".18"/><stop offset="1" stop-color="#ad4434" stop-opacity="0"/></linearGradient></defs><path d="M0 25H380M0 65H380M0 105H380" stroke="#ede9e2" stroke-dasharray="3 3"/><path d="M0 100L35 88L65 92L100 64L130 70L160 41L190 55L225 25L255 43L285 20L325 35L355 8L380 13V125H0Z" fill="url(#chart-fill)"/><path d="M0 100L35 88L65 92L100 64L130 70L160 41L190 55L225 25L255 43L285 20L325 35L355 8L380 13" fill="none" stroke="#982e27" stroke-width="2.5"/><circle cx="355" cy="8" r="4" fill="#982e27"/></svg><div class="chart-days"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div></div>
                     <div class="mini-bottom"><span><i class="green-dot"></i> Inventory up to date</span><strong>Open point of sale</strong></div>
                 </div>
             </div>
         </div>
-        <div class="floating-sale"><span class="sale-check">✓</span><div><small>ANOTHER GOOD DAY</small><strong>Sale completed.</strong><span>Stock updated automatically</span></div><span class="sale-amount">+₱450</span></div>
+        <div class="floating-sale"><span class="sale-check">✓</span><div><strong>Sale completed.</strong><span>Stock updated automatically</span></div><span class="sale-amount">+₱450</span></div>
     </div>
 </section>
 <section class="product-section section-dark" id="product" aria-labelledby="product-summary-heading">

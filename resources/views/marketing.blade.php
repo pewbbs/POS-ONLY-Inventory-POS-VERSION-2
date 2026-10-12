@@ -28,7 +28,7 @@
     </nav>
     <div class="header-actions"><a class="button button-dark button-small" href="{{ $actionUrl }}">{{ $actionLabel }}</a></div>
 </header>
-<main id="main">
+<main id="main" tabindex="-1">
     <section class="marketing-hero" aria-labelledby="page-title">
         <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="{{ route('home', [], false) }}">Home</a><span aria-hidden="true">/</span><span aria-current="page">{{ $page['label'] }}</span></nav>
         <h1 id="page-title">{{ $page['label'] }}</h1>

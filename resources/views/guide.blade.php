@@ -26,7 +26,7 @@
         </nav>
     </header>
 
-    <main id="guide-content">
+    <main id="guide-content" tabindex="-1">
         <section class="guide-hero" aria-labelledby="guide-title">
             <h1 id="guide-title">User guide</h1>
             <div class="guide-intro"><p>Find the steps for checkout, inventory, purchasing, reports, and account settings.</p></div>
