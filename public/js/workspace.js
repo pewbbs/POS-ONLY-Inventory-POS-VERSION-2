@@ -2320,6 +2320,8 @@
             const totalsContainer = view.querySelector('.cart-totals');
             totalsContainer.innerHTML = `<div class="total-row"><span>Subtotal</span><b>${money(totals.subtotal)}</b></div>${totals.discount ? `<div class="total-row"><span>Discount (${state.discount}%)</span><b>−${money(totals.discount)}</b></div>` : ''}<div class="total-row"><span>Tax (${totals.taxPercent}%)</span><b>${money(totals.tax)}</b></div><div class="total-row grand-total"><span>Total due</span><b>${money(totals.total)}</b></div>`;
             view.querySelector('[data-action="charge"] span').textContent = `Charge ${money(totals.total)}`;
+            const mobileSummary = view.querySelector('.mobile-cart-bar strong');
+            if (mobileSummary) { mobileSummary.textContent = `${itemsLabel(state.cart.reduce((total, item) => total + item.quantity, 0))} · ${money(totals.total)}`; }
             focused.setAttribute('aria-invalid', number(target.value) > 100 || number(target.value) < 0 ? 'true' : 'false');
         }
         if (target.closest('.purchase-line')) { purchaseTotal(); }

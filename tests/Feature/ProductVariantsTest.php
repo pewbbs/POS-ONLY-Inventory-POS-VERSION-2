@@ -216,6 +216,113 @@ class ProductVariantsTest extends TestCase
         $this->assertDatabaseCount('product_families', 0);
     }
 
+    #[TestWith(['product_create', 'sku', 'sku'])]
+    #[TestWith(['product_create', 'barcode', 'sku'])]
+    #[TestWith(['product_create', 'sku', 'barcode'])]
+    #[TestWith(['product_create', 'barcode', 'barcode'])]
+    #[TestWith(['product_update', 'barcode', 'sku'])]
+    #[TestWith(['family_create', 'barcode', 'sku'])]
+    #[TestWith(['family_append', 'sku', 'barcode'])]
+    public function test_scanner_identifier_case_collisions_are_422_without_stock_changes(string $operation, string $incomingField, string $existingField): void
+    {
+        $store = $this->store();
+        $existing = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'sku' => 'EXISTING-SKU', 'barcode' => 'EXISTING-CODE']);
+        $originalStock = Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $existing->id, 'location_id' => $store['location']->id, 'quantity' => 9]);
+        $identifier = strtolower($existing->{$existingField});
+        $normal = ['name' => 'New item', 'sku' => 'UNIQUE-SKU', 'barcode' => 'UNIQUE-CODE', 'category' => 'General', 'price' => 10,
+            'reorder_level' => 1, 'location_id' => $store['location']->id, 'quantity' => 4, $incomingField => $identifier];
+        $this->actingAs($store['actor']);
+
+        if ($operation === 'product_update') {
+            $editable = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'sku' => 'EDITABLE-SKU', 'barcode' => 'EDITABLE-CODE']);
+            Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $editable->id, 'location_id' => $store['location']->id, 'quantity' => 7]);
+            $response = $this->putJson('/api/products/'.$editable->id, $normal);
+        } elseif ($operation === 'family_create') {
+            $data = $this->familyData($store);
+            $data['variants'][0][$incomingField] = $identifier;
+            $response = $this->postJson('/api/product-families', $data);
+        } elseif ($operation === 'family_append') {
+            $family = $this->createFamily($store);
+            $data = $this->appendData($store);
+            $data['variants'][0][$incomingField] = $identifier;
+            $response = $this->postJson('/api/product-families/'.$family['id'].'/variants', $data);
+        } else {
+            $response = $this->postJson('/api/products', $normal);
+        }
+
+        $response->assertUnprocessable()->assertJsonValidationErrors('sku');
+        if ($operation === 'product_update') {
+            $this->assertDatabaseHas('products', ['id' => $editable->id, 'sku' => 'EDITABLE-SKU', 'barcode' => 'EDITABLE-CODE']);
+            $this->assertDatabaseHas('stocks', ['product_id' => $editable->id, 'location_id' => $store['location']->id, 'quantity' => 7]);
+        }
+        $this->assertDatabaseHas('products', ['id' => $existing->id, 'sku' => 'EXISTING-SKU', 'barcode' => 'EXISTING-CODE']);
+        $this->assertDatabaseHas('stocks', ['id' => $originalStock->id, 'quantity' => 9]);
+        $this->assertDatabaseCount('products', $operation === 'family_append' ? 3 : ($operation === 'product_update' ? 2 : 1));
+        $this->assertDatabaseCount('stocks', $operation === 'family_append' ? 3 : ($operation === 'product_update' ? 2 : 1));
+        $this->assertDatabaseCount('product_families', $operation === 'family_append' ? 1 : 0);
+        $this->assertDatabaseCount('product_variant_batches', $operation === 'family_append' ? 1 : 0);
+        $this->assertDatabaseCount('stock_movements', $operation === 'family_append' ? 2 : 0);
+    }
+
+    #[TestWith(['Ñ-CODE', 'Ñ-CODE'])]
+    #[TestWith(['Ñ-CODE', 'ñ-code'])]
+    #[TestWith(['É-CODE', 'é-code'])]
+    #[TestWith(['K-CODE', 'k-code'])]
+    #[TestWith(['İ-CODE', 'i̇-code'])]
+    public function test_unicode_scanner_identifier_collisions_are_422_without_catalog_or_stock_changes(string $existingSku, string $incomingBarcode): void
+    {
+        $store = $this->store();
+        $existing = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'sku' => $existingSku, 'barcode' => 'EXISTING-CODE']);
+        $stock = Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $existing->id, 'location_id' => $store['location']->id, 'quantity' => 9]);
+        $data = ['name' => 'New item', 'sku' => 'NEW-SKU', 'barcode' => $incomingBarcode, 'category' => 'General', 'price' => 10,
+            'reorder_level' => 1, 'location_id' => $store['location']->id, 'quantity' => 4];
+
+        $this->actingAs($store['actor'])->postJson('/api/products', $data)->assertUnprocessable()->assertJsonValidationErrors('sku');
+
+        $this->assertDatabaseHas('products', ['id' => $existing->id, 'sku' => $existingSku, 'barcode' => 'EXISTING-CODE']);
+        $this->assertDatabaseHas('stocks', ['id' => $stock->id, 'quantity' => 9]);
+        $this->assertDatabaseCount('products', 1);
+        $this->assertDatabaseCount('stocks', 1);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    #[TestWith(['OWN-SKU', 'own-sku', 'OWN-CODE', 'own-code'])]
+    #[TestWith(['Ñ-SKU', 'ñ-sku', 'É-CODE', 'é-code'])]
+    public function test_scanner_identifier_case_updates_ignore_own_product_and_other_tenants(string $originalSku, string $requestedSku, string $originalBarcode, string $requestedBarcode): void
+    {
+        $store = $this->store();
+        $foreign = $this->store();
+        $product = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'sku' => $originalSku, 'barcode' => $originalBarcode]);
+        $foreignProduct = Product::factory()->create(['tenant_id' => $foreign['tenant']->id, 'sku' => $requestedSku, 'barcode' => $requestedBarcode]);
+        $stock = Stock::factory()->create(['tenant_id' => $store['tenant']->id, 'product_id' => $product->id, 'location_id' => $store['location']->id, 'quantity' => 7]);
+        $foreignStock = Stock::factory()->create(['tenant_id' => $foreign['tenant']->id, 'product_id' => $foreignProduct->id, 'location_id' => $foreign['location']->id, 'quantity' => 11]);
+        $data = ['name' => $product->name, 'sku' => $requestedSku, 'barcode' => $requestedBarcode, 'category' => $product->category, 'price' => 10, 'reorder_level' => 1];
+
+        $this->actingAs($store['actor'])->putJson('/api/products/'.$product->id, $data)->assertOk()->assertJsonPath('sku', $requestedSku)->assertJsonPath('barcode', $requestedBarcode);
+
+        $this->assertDatabaseHas('stocks', ['id' => $stock->id, 'quantity' => 7]);
+        $this->assertDatabaseHas('stocks', ['id' => $foreignStock->id, 'quantity' => 11]);
+        $this->assertDatabaseHas('products', ['id' => $foreignProduct->id, 'sku' => $requestedSku, 'barcode' => $requestedBarcode]);
+        $this->assertDatabaseCount('products', 2);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_unique_unicode_scanner_identifiers_are_saved_without_rewriting(): void
+    {
+        $store = $this->store();
+        $existing = Product::factory()->create(['tenant_id' => $store['tenant']->id, 'sku' => 'EXISTING-SKU', 'barcode' => 'EXISTING-CODE']);
+        $data = ['name' => 'Imported product', 'sku' => 'CAFÉ-S', 'barcode' => '商品-001', 'category' => 'General', 'price' => 10,
+            'reorder_level' => 1, 'location_id' => $store['location']->id, 'quantity' => 4];
+
+        $response = $this->actingAs($store['actor'])->postJson('/api/products', $data)->assertCreated()->assertJsonPath('sku', 'CAFÉ-S')->assertJsonPath('barcode', '商品-001');
+
+        $this->assertDatabaseHas('products', ['id' => $response->json('id'), 'sku' => 'CAFÉ-S', 'barcode' => '商品-001']);
+        $this->assertDatabaseHas('products', ['id' => $existing->id, 'sku' => 'EXISTING-SKU', 'barcode' => 'EXISTING-CODE']);
+        $this->assertDatabaseHas('stocks', ['product_id' => $response->json('id'), 'location_id' => $store['location']->id, 'quantity' => 4]);
+        $this->assertDatabaseCount('products', 2);
+        $this->assertDatabaseCount('stock_movements', 1);
+    }
+
     public function test_variant_edit_preserves_family_identity_and_regenerates_name_from_options(): void
     {
         $store = $this->store();

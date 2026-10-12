@@ -10,7 +10,10 @@ use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\InventoryService;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 use PHPUnit\Framework\Attributes\TestWith;
 use Tests\TestCase;
 
@@ -68,6 +71,65 @@ class BillingTest extends TestCase
             ->assertJsonPath('subscription.trial_ends_at', $original);
 
         $this->assertDatabaseCount('billing_invoices', 0);
+    }
+
+    public function test_registered_starter_workspace_pays_its_first_simulated_invoice_once_and_preserves_other_company_records(): void
+    {
+        $this->travelTo('2026-10-12 10:00:00');
+        $existingOwner = $this->owner();
+        $existingTenant = $existingOwner->tenant;
+        $existingSubscription = $this->activeSubscription($existingOwner);
+        $existingInvoice = BillingInvoice::factory()->create([
+            'tenant_id' => $existingOwner->tenant_id, 'subscription_id' => $existingSubscription->id,
+            'status' => 'paid', 'payment_method' => 'simulation', 'payment_provider' => 'simulation',
+            'payment_mode' => 'simulation', 'paid_by' => $existingOwner->id, 'paid_at' => now(),
+        ]);
+        $location = Location::factory()->create(['tenant_id' => $existingOwner->tenant_id]);
+        $product = Product::factory()->create(['tenant_id' => $existingOwner->tenant_id]);
+        $stock = Stock::factory()->create(['tenant_id' => $existingOwner->tenant_id, 'location_id' => $location->id, 'product_id' => $product->id, 'quantity' => 8]);
+        $existingRecords = [$existingTenant, $existingOwner, $existingSubscription, $existingInvoice, $stock];
+        $before = array_map(fn (Model $record): array => $record->refresh()->getRawOriginal(), $existingRecords);
+        Http::preventStrayRequests();
+        Notification::fake();
+
+        $this->post('/register', [
+            'business_name' => 'Fresh starter company', 'name' => 'Fresh owner', 'email' => 'fresh-owner@example.test',
+            'password' => 'a-private-test-password', 'password_confirmation' => 'a-private-test-password', 'plan' => 'starter',
+        ])->assertRedirect('/app');
+
+        $owner = User::where('email', 'fresh-owner@example.test')->firstOrFail();
+        $this->assertAuthenticatedAs($owner, 'web');
+        $this->assertNotSame($existingOwner->tenant_id, $owner->tenant_id);
+        $this->assertSame('admin', $owner->role);
+        $trial = $this->getJson('/api/billing')->assertOk()
+            ->assertJsonPath('subscription.plan', 'starter')->assertJsonPath('subscription.status', 'trialing')
+            ->assertJsonPath('usage.locations', 1)->assertJsonPath('usage.team_members', 1)
+            ->assertJsonPath('payment_config.provider', 'simulation')->assertJsonCount(0, 'invoices');
+        $this->assertStringStartsWith('2026-10-26T10:00:00', $trial->json('subscription.trial_ends_at'));
+
+        $checkout = $this->postJson('/api/billing/checkout', ['amount' => 1, 'plan' => 'scale'])->assertOk()
+            ->assertJsonPath('invoices.0.plan', 'starter')->assertJsonPath('invoices.0.amount', 499)
+            ->assertJsonPath('invoices.0.currency', 'PHP')->assertJsonPath('invoices.0.status', 'open');
+        $invoiceId = $checkout->json('invoices.0.id');
+        $payment = ['idempotency_key' => 'fresh-company-first-payment'];
+        $paid = $this->postJson('/api/billing/invoices/'.$invoiceId.'/simulate-payment', $payment)->assertOk()
+            ->assertJsonPath('subscription.status', 'active')->assertJsonPath('subscription.plan', 'starter')
+            ->assertJsonPath('invoices.0.status', 'paid')->assertJsonPath('invoices.0.payment_source', 'simulation')
+            ->assertJsonPath('invoices.0.payment_provider', 'simulation')->assertJsonPath('invoices.0.payment_mode', 'simulation');
+        $this->assertStringStartsWith('2026-11-12T10:00:00', $paid->json('subscription.current_period_end'));
+
+        $this->travel(1)->days();
+        $this->postJson('/api/billing/invoices/'.$invoiceId.'/simulate-payment', $payment)->assertOk()
+            ->assertJsonPath('subscription.current_period_end', $paid->json('subscription.current_period_end'))
+            ->assertJsonPath('invoices.0.paid_at', $paid->json('invoices.0.paid_at'))->assertJsonCount(1, 'invoices');
+        $this->assertDatabaseHas('billing_invoices', ['id' => $invoiceId, 'tenant_id' => $owner->tenant_id, 'amount_cents' => 49900, 'paid_by' => $owner->id]);
+        $this->assertDatabaseCount('billing_invoices', 2);
+        $this->assertDatabaseCount('billing_payment_attempts', 0);
+        foreach ($existingRecords as $index => $record) {
+            $this->assertSame($before[$index], $record->refresh()->getRawOriginal());
+        }
+        Http::assertNothingSent();
+        Notification::assertNothingSent();
     }
 
     public function test_invoice_creation_is_duplicate_safe_and_ignores_client_amount(): void

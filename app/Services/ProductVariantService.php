@@ -138,20 +138,28 @@ class ProductVariantService
     public function validateIdentifiers(array $rows, int $tenantId, ?int $ignoreProductId = null): void
     {
         $seen = [];
+        $identifiers = [];
         foreach ($rows as $index => $row) {
-            $identifiers = array_values(array_unique(array_filter([$row['sku'], $row['barcode'] ?? null], fn (?string $value): bool => $value !== null && $value !== '')));
-            foreach ($identifiers as $identifier) {
+            $rowIdentifiers = array_values(array_unique(array_filter([$row['sku'], $row['barcode'] ?? null], fn (?string $value): bool => $value !== null && $value !== '')));
+            foreach ($rowIdentifiers as $identifier) {
                 $key = Str::lower($identifier);
                 if (isset($seen[$key]) && $seen[$key] !== $index) {
                     throw ValidationException::withMessages(['variants' => 'A SKU or barcode belongs to another row in this batch. Use a unique scanner identifier for each product.']);
                 }
                 $seen[$key] = $index;
+                $identifiers[] = $identifier;
             }
-            $collision = Product::where('tenant_id', $tenantId)->when($ignoreProductId, fn ($query) => $query->where('id', '!=', $ignoreProductId))
-                ->where(function ($query) use ($identifiers): void {
-                    $query->whereIn('sku', $identifiers)->orWhereIn('barcode', $identifiers);
-                })->exists();
-            if ($collision) {
+        }
+        $identifiers = array_values(array_unique($identifiers));
+        $catalog = Product::where('tenant_id', $tenantId)->when($ignoreProductId, fn ($query) => $query->where('id', '!=', $ignoreProductId));
+        $collision = (clone $catalog)->where(function ($query) use ($identifiers): void {
+            $query->whereIn('sku', $identifiers)->orWhereIn('barcode', $identifiers);
+        })->exists();
+        if ($collision) {
+            throw ValidationException::withMessages(['sku' => 'This SKU or barcode already belongs to another product. Use a unique scanner identifier.']);
+        }
+        foreach ($catalog->select(['id', 'sku', 'barcode'])->lazyById(500) as $product) {
+            if (isset($seen[Str::lower($product->sku)]) || ($product->barcode !== null && isset($seen[Str::lower($product->barcode)]))) {
                 throw ValidationException::withMessages(['sku' => 'This SKU or barcode already belongs to another product. Use a unique scanner identifier.']);
             }
         }
