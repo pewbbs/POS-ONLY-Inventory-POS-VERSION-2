@@ -1,5 +1,5 @@
 'use strict';
-const CACHE = 'posonly-offline-shell-0a4ff1445c00';
+const CACHE = 'posonly-offline-shell-d99f6c4d3962';
 const ASSETS = ['/offline.html', '/css/workspace.css', '/css/fonts.css', '/css/offline.css', '/js/offline-store.js', '/js/offline-shell.js', '/images/favicon.svg', '/fonts/anton-400.ttf', '/fonts/manrope-400.ttf', '/fonts/manrope-500.ttf', '/fonts/manrope-600.ttf', '/fonts/manrope-700.ttf', '/fonts/manrope-800.ttf'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS.map(path => new Request(path, {cache: 'reload'})))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', event => { event.waitUntil(Promise.all([caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('posonly-offline-shell-') && key !== CACHE).map(key => caches.delete(key)))), self.clients.claim()])); });
@@ -11,7 +11,7 @@ async function forgetSignedOutCatalog() {
         request.onsuccess = () => {
             const db = request.result;
             const tx = db.transaction(['device', 'snapshots'], 'readwrite');
-            tx.objectStore('device').clear(); tx.objectStore('snapshots').clear();
+            tx.objectStore('device').delete('active'); tx.objectStore('snapshots').clear();
             tx.oncomplete = () => { db.close(); resolve(); };
             tx.onabort = tx.onerror = () => { db.close(); reject(tx.error); };
         };

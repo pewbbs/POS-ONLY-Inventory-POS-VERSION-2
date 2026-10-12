@@ -21,7 +21,7 @@
             dialog.querySelector('[data-offline="enable"]').textContent = owns && current.active.enabled ? 'Refresh saved catalog' : 'Enable on this device';
             dialog.querySelector('[data-offline="enable"]').disabled = busy || !ready;
             dialog.querySelector('[data-offline="sync"]').disabled = busy || !owns || !current.sales.some(sale => sale.status !== 'synced');
-            dialog.querySelector('[data-offline="export"]').disabled = busy || !owns || !pending;
+            dialog.querySelector('[data-offline="export"]').disabled = busy || !owns || (!pending && !current.onlineRequests?.length);
             dialog.querySelector('[data-offline="clear"]').disabled = busy || !current.active;
             if (!busy) {
                 status.textContent = feedback || (owns && current.snapshot ? `${current.snapshot.tenant.name} · catalog saved ${new Date(current.snapshot.captured_at).toLocaleString()} · ${pending} queued. ${store.fresh(current.snapshot) ? 'Ready for cash sales.' : 'Catalog expired; reconnect to refresh.'}` : 'Offline mode is not enabled for this account.');
@@ -91,7 +91,10 @@
     document.querySelector('form[action="/logout"]')?.addEventListener('submit', async event => {
         if (clearing) { return; }
         event.preventDefault();
-        try { await store.clear(true); await cleanup(); clearing = true; event.target.requestSubmit(); }
+        try {
+            if (navigator.serviceWorker?.controller?.scriptURL === `${location.origin}/service-worker.js`) { await register(); }
+            await store.clear(true); await cleanup(); clearing = true; event.target.requestSubmit();
+        }
         catch (error) { dialog.showModal(); message(error.message); }
     });
     update();

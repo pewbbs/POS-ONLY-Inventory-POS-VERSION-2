@@ -11,6 +11,7 @@
     const uuid = () => crypto.randomUUID ? crypto.randomUUID() : [...crypto.getRandomValues(new Uint8Array(24))].map(value => value.toString(16).padStart(2, '0')).join('');
     const cents = value => Math.round((Number(value) + Number.EPSILON) * 100);
     const remaining = sale => sale.status !== 'synced';
+    const onlineRequests = (records, owner = null) => records.filter(record => record.kind === 'online-checkout' && (!owner || record.owner === owner)).sort((a, b) => a.saved_at.localeCompare(b.saved_at));
     const requestValue = request => new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     async function database() {
         if (connection) { return connection; }
@@ -38,9 +39,54 @@
     async function context() {
         return transaction(['device', 'snapshots', 'sales'], 'readonly', async tx => {
             const active = await requestValue(tx.objectStore('device').get('active'));
-            if (!active?.owner) { return {active: null, snapshot: null, sales: []}; }
-            const [snapshot, all] = await Promise.all([requestValue(tx.objectStore('snapshots').get(active.owner)), requestValue(tx.objectStore('sales').getAll())]);
-            return {active, snapshot, sales: all.filter(sale => sale.owner === active.owner).sort((a, b) => a.created_at.localeCompare(b.created_at))};
+            if (!active?.owner) { return {active: null, snapshot: null, sales: [], onlinePending: null, onlineRequests: []}; }
+            const [snapshot, all, device] = await Promise.all([requestValue(tx.objectStore('snapshots').get(active.owner)), requestValue(tx.objectStore('sales').getAll()), requestValue(tx.objectStore('device').getAll())]);
+            const pending = onlineRequests(device, active.owner);
+            return {active, snapshot, sales: all.filter(sale => sale.owner === active.owner).sort((a, b) => a.created_at.localeCompare(b.created_at)), onlinePending: pending[0] || null, onlineRequests: pending};
+        });
+    }
+    async function pendingOnline(owner) {
+        return transaction(['device'], 'readonly', async tx => onlineRequests(await requestValue(tx.objectStore('device').getAll()), owner)[0] || null);
+    }
+    async function reserveOnline(owner, envelope, migrating = false) {
+        if (`${envelope.tenantId}:${envelope.userId}` !== owner || !envelope.payload?.idempotency_key || !Array.isArray(envelope.payload.items) || !Array.isArray(envelope.payload.payments) || !envelope.totals) { throw new Error('The original checkout could not be saved on this device. No request was sent.'); }
+        let created = false;
+        const record = await transaction(['device'], 'readwrite', async tx => {
+            const store = tx.objectStore('device');
+            const pending = onlineRequests(await requestValue(store.getAll()), owner);
+            if (await requestValue(store.get(`online-resolved:${owner}:${envelope.payload.idempotency_key}`))) {
+                if (migrating) { return null; }
+                throw new Error('This original checkout was already resolved in another tab. Refresh the workspace before starting a new sale.');
+            }
+            const existing = pending.find(record => record.payload.idempotency_key === envelope.payload.idempotency_key);
+            if (existing) {
+                if (JSON.stringify(existing.payload) !== JSON.stringify(envelope.payload)) { throw new Error('This checkout key already protects a different original request. Check its sale status first.'); }
+                return existing;
+            }
+            if (!migrating && pending.length) { throw new Error('Another checkout on this device still needs confirmation. Check the original sale before starting another checkout.'); }
+            const result = {...JSON.parse(JSON.stringify(envelope)), id: `online:${owner}:${envelope.payload.idempotency_key}`, kind: 'online-checkout', owner, saved_at: new Date().toISOString()};
+            store.add(result);
+            created = true;
+            return result;
+        });
+        if (created) { changed(); }
+        return record;
+    }
+    async function clearOnline(owner, key) {
+        await transaction(['device'], 'readwrite', async tx => {
+            const store = tx.objectStore('device');
+            const record = await requestValue(store.get(`online:${owner}:${key}`));
+            if (record?.owner === owner && record.payload.idempotency_key === key) { store.delete(record.id); }
+            store.put({id: `online-resolved:${owner}:${key}`, kind: 'online-resolution', owner, key, resolved_at: new Date().toISOString()});
+        });
+        changed();
+    }
+    async function cashSessionBlock(owner, sessionId, locationId) {
+        return transaction(['device', 'sales'], 'readonly', async tx => {
+            const [device, sales] = await Promise.all([requestValue(tx.objectStore('device').getAll()), requestValue(tx.objectStore('sales').getAll())]);
+            if (sales.some(sale => sale.owner === owner && remaining(sale) && Number(sale.payload.expected.cash_session_id) === Number(sessionId))) { return 'Sync the queued cash sales for this shift before closing it. Their cash must be confirmed in the original drawer.'; }
+            if (onlineRequests(device, owner).some(record => Number(record.payload.location_id) === Number(locationId))) { return 'An online checkout at this location still needs confirmation. Check that original sale before closing this cash shift.'; }
+            return null;
         });
     }
     async function identify(owner) {
@@ -103,6 +149,7 @@
             const snapshot = active?.enabled ? await requestValue(tx.objectStore('snapshots').get(active.owner)) : null;
             if (!fresh(snapshot) || !snapshot.can_write || !['admin', 'manager', 'cashier'].includes(snapshot.user.role)) { throw new Error('Reconnect and refresh this device before recording a cash sale.'); }
             if (snapshot.permit !== snapshotPermit) { throw new Error('The saved catalog changed. Review your cart again.'); }
+            if (onlineRequests(await requestValue(tx.objectStore('device').getAll()), active.owner).length) { throw new Error('An online checkout on this device still needs confirmation. Reconnect and check the original sale before recording an offline sale.'); }
             assertNoUncertainOnlineSale(active.owner);
             const sales = (await requestValue(tx.objectStore('sales').getAll())).filter(sale => sale.owner === active.owner);
             if (sales.filter(remaining).length >= MAX_QUEUE) { throw new Error('Sync the queued sales before recording more.'); }
@@ -145,6 +192,9 @@
             const result = await response.json().catch(() => ({}));
             if (!response.ok) { const error = new Error(result.message || 'This request could not be confirmed. Reconnect and check your account.'); error.status = response.status; throw error; }
             return result;
+        } catch (error) {
+            if (error.name === 'AbortError' || error instanceof TypeError) { throw new Error('Connection interrupted. The original queued sales stay on this device. Reconnect and retry synchronization.'); }
+            throw error;
         } finally { clearTimeout(timeout); }
     }
     async function refreshSnapshot(enabled = false, expectedOwner = null) {
@@ -222,9 +272,11 @@
     async function clear(signingOut = false) {
         await transaction(['device', 'snapshots', 'sales'], 'readwrite', async tx => {
             const sales = await requestValue(tx.objectStore('sales').getAll());
-            const active = await requestValue(tx.objectStore('device').get('active'));
-            if (sales.some(sale => remaining(sale) && (!signingOut || sale.owner === active?.owner))) { throw new Error('Queued cash sales are still on this device. Sign in to their original account and sync them before clearing or signing out. Download a backup if you need help resolving them.'); }
-            tx.objectStore('device').clear(); tx.objectStore('snapshots').clear();
+            const device = tx.objectStore('device');
+            const requests = onlineRequests(await requestValue(device.getAll()));
+            if (!signingOut && (sales.some(remaining) || requests.length)) { throw new Error('Unconfirmed sales are still on this device. Sign in to their original account and confirm them before clearing. Download a backup if you need help resolving them.'); }
+            if (signingOut) { device.delete('active'); } else { device.clear(); }
+            tx.objectStore('snapshots').clear();
             if (signingOut) { sales.filter(sale => !remaining(sale)).forEach(sale => tx.objectStore('sales').delete(sale.id)); }
             else { tx.objectStore('sales').clear(); }
         });
@@ -233,9 +285,9 @@
     async function exportQueue() {
         const current = await context();
         if (!current.active?.owner) { throw new Error('No saved account is selected.'); }
-        const blob = new Blob([JSON.stringify({format: 'posonly-offline-backup-v1', owner: current.active.owner, exported_at: new Date().toISOString(), sales: current.sales.filter(remaining)}, null, 2)], {type: 'application/json'});
+        const blob = new Blob([JSON.stringify({format: 'posonly-offline-backup-v1', owner: current.active.owner, exported_at: new Date().toISOString(), sales: current.sales.filter(remaining), online_checkouts: current.onlineRequests}, null, 2)], {type: 'application/json'});
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a'); link.href = url; link.download = `posonly-offline-${new Date().toISOString().slice(0, 10)}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
-    window.POSONLYOffline = {context, identify, saveSnapshot, refreshSnapshot, serverNow, fresh, available, quote, enqueue, sync, clear, exportQueue};
+    window.POSONLYOffline = {context, identify, pendingOnline, reserveOnline, clearOnline, cashSessionBlock, saveSnapshot, refreshSnapshot, serverNow, fresh, available, quote, enqueue, sync, clear, exportQueue};
 })();

@@ -42,7 +42,12 @@
     }
     function renderSales() {
         const rows = [...current.sales].reverse();
-        queue.innerHTML = rows.length ? rows.slice(0, 100).map(sale => `<div class="offline-sale-row"><div><strong>${escape(sale.receipt?.number || sale.provisional_number)}</strong> <span class="badge">${sale.status === 'synced' ? 'Confirmed' : sale.status === 'conflict' ? 'Needs review' : 'Queued · provisional'}</span><small>${escape(sale.location)} · ${escape(new Date(sale.created_at).toLocaleString())} · ${money(sale.payload.expected.total_cents)}</small>${sale.error ? `<small class="offline-conflict">${escape(sale.error)} Keep the original request. Ask your administrator to reconcile it before retrying.</small>` : ''}</div><button class="button" data-receipt="${escape(sale.id)}">View receipt</button></div>`).join('') : '<p class="offline-empty" style="padding:22px">No cash sales saved on this device for this account.</p>';
+        const awaiting = rows.filter(sale => sale.status !== 'synced');
+        const confirmed = rows.filter(sale => sale.status === 'synced');
+        const recentConfirmed = confirmed.slice(0, 100);
+        const needsReview = awaiting.filter(sale => sale.status === 'conflict').length;
+        const counts = `${awaiting.length} awaiting confirmation${needsReview ? ` · ${needsReview} ${needsReview === 1 ? 'needs' : 'need'} review` : ''}. Showing ${recentConfirmed.length} of ${confirmed.length} confirmed receipts${confirmed.length > 100 ? ' (most recent 100)' : ''}. All unconfirmed sales are listed first.`;
+        queue.innerHTML = rows.length ? `<p class="offline-description" style="padding:22px;margin:0">${counts}</p>` + [...awaiting, ...recentConfirmed].map(sale => `<div class="offline-sale-row"><div><strong>${escape(sale.receipt?.number || sale.provisional_number)}</strong> <span class="badge">${sale.status === 'synced' ? 'Confirmed' : sale.status === 'conflict' ? 'Needs review' : 'Queued · provisional'}</span><small>${escape(sale.location)} · ${escape(new Date(sale.created_at).toLocaleString())} · ${money(sale.payload.expected.total_cents)}</small>${sale.error ? `<small class="offline-conflict">${escape(sale.error)} Keep the original request. Ask your administrator to reconcile it before retrying.</small>` : ''}</div><button class="button" data-receipt="${escape(sale.id)}">View receipt</button></div>`).join('') : '<p class="offline-empty" style="padding:22px">No cash sales saved on this device for this account.</p>';
     }
     function render() {
         const snapshot = current.snapshot;
@@ -52,7 +57,7 @@
         document.getElementById('offline-export').disabled = busy || !current.sales.some(sale => sale.status !== 'synced');
         renderSales();
         if (!current.active?.enabled || !store.fresh(snapshot)) {
-            content.innerHTML = '<p class="offline-empty">Open your online workspace and choose Offline mode to save or refresh the catalog for this trusted device. Previously queued receipts remain below; sign in to their original account to sync them.</p>';
+            content.innerHTML = '<p class="offline-empty">Open your online workspace and choose Offline mode to save or refresh the catalog for this trusted device. Previously queued receipts remain below; sign in to their original account to sync them.</p>' + (cart.length ? `<p class="offline-description">Your unsaved cart has ${cart.reduce((sum, item) => sum + item.quantity, 0)} items. Clear it before refreshing the catalog or syncing. This does not delete queued receipts.</p><button id="offline-clear-cart" class="button" type="button" ${busy ? 'disabled' : ''}>Clear unsaved cart</button>` : '');
             return;
         }
         if (!snapshot.locations.some(location => location.id === locationId)) { locationId = snapshot.locations[0]?.id || 0; }

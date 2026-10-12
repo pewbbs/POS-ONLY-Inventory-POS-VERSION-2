@@ -43,6 +43,9 @@
         pendingSale: null,
         pendingSaleTotals: null,
         pendingSaleUncertain: false,
+        pendingSaleOwner: null,
+        pendingSalePreparing: false,
+        restoringPendingSale: false,
         restoredPendingSale: false,
         activity: null,
         activityLoading: false,
@@ -269,26 +272,11 @@
         activeRefresh = api('/bootstrap');
         try { data = await activeRefresh; } finally { state.refreshing = false; activeRefresh = null; }
         state.data = data;
+        try { await window.POSONLYOffline.identify(`${data.tenant.id}:${data.user.id}`); }
+        catch { toast('Device storage is unavailable. Browsing can continue; checkout needs storage to protect interrupted requests.', true); }
         window.dispatchEvent(new CustomEvent('posonly:workspace-ready', {detail: {tenant_id: data.tenant.id, user_id: data.user.id}}));
         state.analyticsReceiptError = null;
-        if (!state.restoredPendingSale) {
-            state.restoredPendingSale = true;
-            try {
-                const pending = JSON.parse(sessionStorage.getItem('stockroom-pending-sale') || 'null');
-                if (pending && pending.tenantId === data.tenant.id && pending.userId === data.user.id && Array.isArray(pending.payload?.items) && Array.isArray(pending.payload?.payments) && pending.payload?.idempotency_key) {
-                    state.pendingSale = pending.payload;
-                    state.pendingSaleTotals = pending.totals;
-                    state.pendingSaleUncertain = true;
-                    state.cart = pending.payload.items;
-                    state.location = number(pending.payload.location_id);
-                    state.discount = number(pending.payload.discount_percent);
-                    state.customer = pending.payload.customer_id || '';
-                    state.priceTier = pending.payload.price_tier || 'retail';
-                    state.saleKey = pending.payload.idempotency_key;
-                    toast('A checkout needs confirmation. Open Point of sale and check its status before starting another sale.', true);
-                }
-            } catch { /* Storage is optional; checkout still uses the same key while this page is open. */ }
-        }
+        if (!state.busy && !state.pendingSalePreparing) { try { await restorePendingSale(); } catch (failure) { toast(failure.message, true); } }
         loadHeldCarts();
         restoreRecordAction();
         state.loadedAt = new Date();
@@ -821,10 +809,14 @@
         openModal('Cash session', `${escape(currentLocation()?.name)} · your own cash session`, `${state.cashError ? `<div class="form-error">${escape(state.cashError)}</div>${button('Try again', 'cash-sessions', 'primary')}` : session ? `<div class="cash-session-heading"><div>${statusBadge('Open session', 'green')}<h3>${escape(session.cashier_name)}</h3><small>Opened ${time(session.opened_at)}</small></div><strong>${money(session.expected_cash)}<small>Expected in drawer</small></strong></div><div class="purchase-order-items cash-session-totals">${[['Opening float', session.opening_float], ['Cash sales after change', session.cash_sales], ['Cash added', session.cash_in], ['Cash taken out', -number(session.cash_out)]].map(([label, amount]) => `<div class="receipt-line"><span>${label}</span><strong>${money(amount)}</strong></div>`).join('')}</div><div class="cash-session-actions">${button('Cash in / out', 'cash-adjust', '', 'cash', `data-id="${session.id}"`)}${button('Close & count', 'cash-close', 'primary', 'check', `data-id="${session.id}"`)}</div>${session.adjustments?.length ? `<div class="return-history"><h3>Drawer movements</h3>${session.adjustments.map(entry => `<div><strong>${entry.direction === 'in' ? '+' : '−'}${money(entry.amount)} · ${escape(entry.reason)}</strong><small>${time(entry.created_at)}</small></div>`).join('')}</div>` : ''}` : `<div class="quiet-state">${icon('cash')}<h3>A fresh cash session.</h3><p>Record the float in your drawer before the first sale.</p></div>${modalForm('cash-open', field('Opening float (₱)', 'opening_float', 0, 'number', 'required min="0" max="10000000" step="0.01"', 'Cash already in your drawer. Card and wallet sales are not added to cash.', true), 'Open cash session', `data-key="${uuid()}" data-location="${state.location}"`)}`}<div class="modal-tip" style="margin-top:19px">Cash sales link to your own open session at this location. A return does not automatically remove money from the drawer. Record any actual cash refund as Cash out. Checkout also works without an open session.</div>${history.length ? `<div class="return-history"><h3>Your recent closed sessions</h3>${history.slice(0, 10).map(entry => `<div><strong>${date(entry.closed_at)} · ${money(entry.counted_cash)} counted ${statusBadge(number(entry.variance) === 0 ? 'Balanced' : `${number(entry.variance) > 0 ? '+' : '−'}${money(Math.abs(number(entry.variance)))} variance`, number(entry.variance) === 0 ? 'green' : 'amber')}</strong><small>Opened ${time(entry.opened_at)} · expected ${money(entry.expected_cash)}${entry.close_reason ? `<br>${escape(entry.close_reason)}` : ''}</small></div>`).join('')}</div>` : ''}${session || state.cashError ? `<div class="form-actions">${button('Back to checkout', 'close-modal')}${button('Refresh cash', 'cash-sessions', 'subtle', 'refresh')}</div>` : ''}`);
     }
 
-    function cashActionModal(session, action) {
+    async function cashActionModal(session, action) {
         if (!session) { return; }
         if (state.pendingRecordAction) { recordRecoveryModal(); return; }
         const closing = action === 'cash-close';
+        if (closing) {
+            try { await assertCashSessionCanClose(session.id, session.location_id || state.location); }
+            catch (failure) { toast(failure.message, true); return; }
+        }
         openModal(closing ? 'Close cash session' : 'Record cash movement', `Expected cash: ${money(session.expected_cash)}`, modalForm(closing ? 'cash-close' : 'cash-adjust', `<div class="form-grid">${closing ? field('Counted cash (₱)', 'counted_cash', '', 'number', 'required min="0" max="10000000" step="0.01"', 'Count the physical cash. The difference is saved as a variance.', true) : `${selectField('Movement', 'direction', '<option value="in">Cash in · add to drawer</option><option value="out">Cash out · remove from drawer</option>', '', true)}${field('Amount (₱)', 'amount', '', 'number', 'required min="0.01" max="10000000" step="0.01"', 'Record only money that physically moved.', true)}`}${field(closing ? 'Count note' : 'Reason', 'reason', '', 'text', `${closing ? '' : 'required'} maxlength="200"`, closing ? 'Optional. Explain any difference in the drawer count.' : 'For example: Cash refund for receipt SR-123.', true)}</div>`, closing ? 'Close cash session' : 'Record cash movement', `data-id="${session.id}" data-key="${uuid()}"`));
     }
 
@@ -1921,6 +1913,11 @@
 
     async function saveRecordAction(form, path, payload, label, options = {}) {
         if (state.busy) { return; }
+        const closing = (state.pendingRecordAction?.path || path).match(/^\/cash-sessions\/(\d+)\/close$/);
+        if (closing) {
+            try { await assertCashSessionCanClose(closing[1], state.cashSessions?.current?.location_id || state.location); }
+            catch (failure) { const error = form.querySelector('.form-error'); error.textContent = failure.message; error.hidden = false; return null; }
+        }
         if (!state.pendingRecordAction) {
             state.pendingRecordAction = {path, payload: JSON.parse(JSON.stringify(payload)), label, uncertain: false, method: options.method || 'POST', recovery_key: uuid(), quiet: Boolean(options.quiet), context: options.context || null};
             try { sessionStorage.setItem(recordStorageKey(), JSON.stringify(state.pendingRecordAction)); } catch { /* Preserve in memory if storage is unavailable. */ }
@@ -1997,33 +1994,96 @@
         openModal('Stock locations', 'Each location has its own stock balance.', `<div class="purchase-order-items">${locations().map(location => `<div class="receipt-line"><strong>${escape(location.name)}</strong><span>${escape(location.type || 'Store')}</span></div>`).join('')}</div><div class="modal-tip">This is a stock location. In Channels, link a local web store, marketplace or social shop to its shared stock. External storefronts are not connected in this simulation.</div><div class="form-actions">${button('Close', 'close-modal')}${button('Add location', 'add-location', 'primary', 'plus')}</div>`);
     }
 
-    function rememberPendingSale(payload, totals) {
-        state.pendingSale = JSON.parse(JSON.stringify(payload));
-        state.pendingSaleTotals = {...totals};
-        state.pendingSaleUncertain = false;
-        try { sessionStorage.setItem('stockroom-pending-sale', JSON.stringify({tenantId: state.data.tenant.id, userId: state.data.user.id, payload: state.pendingSale, totals: state.pendingSaleTotals})); } catch { /* Keep the request in memory when browser storage is unavailable. */ }
+    function legacyPendingSale() {
+        try { return JSON.parse(sessionStorage.getItem('stockroom-pending-sale') || 'null'); } catch { return null; }
     }
 
-    function clearPendingSale() {
+    function forgetLegacyPendingSale(key) {
+        try { if (legacyPendingSale()?.payload?.idempotency_key === key) { sessionStorage.removeItem('stockroom-pending-sale'); } } catch { /* The durable original request remains available. */ }
+    }
+
+    function adoptPendingSale(pending, uncertain = true) {
+        state.pendingSale = JSON.parse(JSON.stringify(pending.payload));
+        state.pendingSaleTotals = {...pending.totals};
+        state.pendingSaleOwner = `${pending.tenantId}:${pending.userId}`;
+        state.pendingSaleUncertain = uncertain;
+        state.cart = pending.payload.items.map(item => ({...item}));
+        state.location = number(pending.payload.location_id);
+        state.discount = number(pending.payload.discount_percent);
+        state.customer = pending.payload.customer_id || '';
+        state.priceTier = pending.payload.price_tier || 'retail';
+        state.saleKey = pending.payload.idempotency_key;
+    }
+
+    async function restorePendingSale(notify = true) {
+        if (!state.data || state.restoringPendingSale) { return; }
+        state.restoringPendingSale = true;
+        try {
+            const owner = `${state.data.tenant.id}:${state.data.user.id}`;
+            const legacy = legacyPendingSale();
+            if (legacy && `${legacy.tenantId}:${legacy.userId}` === owner && Array.isArray(legacy.payload?.items) && Array.isArray(legacy.payload?.payments) && legacy.payload?.idempotency_key && legacy.totals) {
+                await window.POSONLYOffline.reserveOnline(owner, legacy, true);
+                forgetLegacyPendingSale(legacy.payload.idempotency_key);
+            }
+            const pending = await window.POSONLYOffline.pendingOnline(owner);
+            if (pending) {
+                const different = state.pendingSaleOwner !== owner || state.pendingSale?.idempotency_key !== pending.payload.idempotency_key;
+                if (different) { adoptPendingSale(pending); if (notify) { toast('A checkout on this device needs confirmation. Open Point of sale and check its original sale status before starting another sale.', true); } }
+            } else if (state.pendingSale) {
+                forgetLegacyPendingSale(state.pendingSale.idempotency_key);
+                state.pendingSale = null; state.pendingSaleTotals = null; state.pendingSaleOwner = null; state.pendingSaleUncertain = false;
+                state.cart = []; state.discount = 0; state.customer = ''; state.saleKey = null;
+            }
+            state.restoredPendingSale = true;
+        } finally { state.restoringPendingSale = false; }
+    }
+
+    async function rememberPendingSale(payload, totals) {
+        const owner = `${state.data.tenant.id}:${state.data.user.id}`;
+        const pending = await window.POSONLYOffline.reserveOnline(owner, {tenantId: state.data.tenant.id, userId: state.data.user.id, payload, totals});
+        adoptPendingSale(pending, false);
+        state.pendingSaleUncertain = false;
+    }
+
+    async function clearPendingSale() {
+        if (state.pendingSale && state.pendingSaleOwner) { await window.POSONLYOffline.clearOnline(state.pendingSaleOwner, state.pendingSale.idempotency_key); forgetLegacyPendingSale(state.pendingSale.idempotency_key); }
         state.pendingSale = null;
         state.pendingSaleTotals = null;
+        state.pendingSaleOwner = null;
         state.pendingSaleUncertain = false;
-        try { sessionStorage.removeItem('stockroom-pending-sale'); } catch { /* Browser storage may be unavailable. */ }
+    }
+
+    async function assertCashSessionCanClose(sessionId, locationId) {
+        if (state.pendingSale && number(state.pendingSale.location_id) === number(locationId)) { throw new Error('Check the original pending sale before closing this cash shift.'); }
+        const owner = `${state.data.tenant.id}:${state.data.user.id}`;
+        const reason = await window.POSONLYOffline.cashSessionBlock(owner, number(sessionId), number(locationId));
+        if (reason) { throw new Error(reason); }
     }
 
     async function completePayment(form, payload) {
-        if (!state.pendingSale) {
-            payload.idempotency_key ||= window.crypto?.randomUUID ? crypto.randomUUID() : `sale-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            state.saleKey = payload.idempotency_key;
-            rememberPendingSale(payload, cartTotals());
-        }
-        const result = await save(form, '/sales', 'POST', state.pendingSale, '');
-        if (result) {
-            clearPendingSale();
-            state.cart = []; state.discount = 0; state.customer = ''; state.saleKey = null;
-            renderSection();
-            receiptModal(result.sale || result, true);
-        }
+        if (state.busy || state.pendingSalePreparing) { return; }
+        state.pendingSalePreparing = true;
+        try {
+            if (!state.pendingSale) {
+                payload.idempotency_key ||= window.crypto?.randomUUID ? crypto.randomUUID() : `sale-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                state.saleKey = payload.idempotency_key;
+                await rememberPendingSale(payload, cartTotals());
+            } else {
+                await window.POSONLYOffline.reserveOnline(state.pendingSaleOwner, {tenantId: state.data.tenant.id, userId: state.data.user.id, payload: state.pendingSale, totals: state.pendingSaleTotals});
+            }
+            const result = await save(form, '/sales', 'POST', state.pendingSale, '');
+            if (result) {
+                await clearPendingSale();
+                state.cart = []; state.discount = 0; state.customer = ''; state.saleKey = null;
+                await restorePendingSale(false);
+                renderSection();
+                receiptModal(result.sale || result, true);
+            }
+        } catch (failure) {
+            try { await restorePendingSale(false); renderSection(); } catch { /* Keep the original in-memory request if storage needs attention. */ }
+            const error = form.querySelector('.form-error');
+            if (error?.isConnected) { error.textContent = failure.message; error.hidden = false; } else { toast(failure.message, true); }
+        } finally { state.pendingSalePreparing = false; }
     }
 
     async function save(form, path, method, payload, message) {
@@ -2051,7 +2111,7 @@
             if (form.dataset.form === 'payment') {
                 const definitiveRejection = failure.status === 422 || (!state.pendingSaleUncertain && failure.status >= 400 && failure.status < 500 && failure.status !== 409);
                 if (definitiveRejection) {
-                    clearPendingSale();
+                    await clearPendingSale();
                     state.saleKey = null;
                     renderSection();
                     if (form.dataset.recovery) { failure.message = `No sale was saved. ${failure.message} Close this dialog, review the cart and try checkout again.`; }
@@ -2253,7 +2313,7 @@
             case 'commerce-sale': await commerceSaleReceipt(id, control); break;
             case 'cash-sessions': await loadCashSessions(); break;
             case 'cash-adjust':
-            case 'cash-close': cashActionModal(state.cashSessions?.current, action); break;
+            case 'cash-close': await cashActionModal(state.cashSessions?.current, action); break;
             case 'hold-cart': holdCartModal(); break;
             case 'held-carts': heldCartsModal(); break;
             case 'resume-held': await resumeHeldCart(id); break;
@@ -2547,6 +2607,10 @@
             case 'cash-close': {
                 if (state.pendingRecordAction) { const pending = state.pendingRecordAction; result = await saveRecordAction(form, pending.path, pending.payload, pending.label); if (result) { await loadCashSessions(); } break; }
                 const action = form.dataset.form;
+                if (action === 'cash-close') {
+                    try { await assertCashSessionCanClose(form.dataset.id, state.cashSessions?.current?.location_id || state.location); }
+                    catch (failure) { const error = form.querySelector('.form-error'); error.textContent = failure.message; error.hidden = false; break; }
+                }
                 const payload = {idempotency_key: form.dataset.key, ...(action === 'cash-open' ? {location_id: number(form.dataset.location), opening_float: round(data.opening_float)} : action === 'cash-adjust' ? {direction: data.direction, amount: round(data.amount), reason: data.reason} : {counted_cash: round(data.counted_cash), reason: data.reason || null})};
                 const path = action === 'cash-open' ? '/cash-sessions/open' : `/cash-sessions/${form.dataset.id}/${action === 'cash-adjust' ? 'adjustments' : 'close'}`;
                 result = await saveRecordAction(form, path, payload, action === 'cash-open' ? 'Cash session opening' : action === 'cash-adjust' ? 'Cash movement' : 'Cash session closing');
@@ -2645,6 +2709,12 @@
     window.addEventListener('popstate', () => { state.saleRecordRequest += 1; const section = location.pathname.split('/')[2] || 'overview'; state.section = Object.hasOwn(sections, section) ? section : 'overview'; if (state.section === 'channels') { invalidateCommerce(); } if (state.section === 'reports') { state.reportView = new URLSearchParams(location.search).get('view') === 'financial' && canManage() ? 'financial' : 'analytics'; } state.search = ''; state.category = 'All products'; renderSection(); if (state.section === 'purchases') { refreshPurchases().catch(() => toast('Purchase records could not be refreshed. Reopen Purchasing to try again.', true)); } });
     window.addEventListener('offline', () => { document.getElementById('connection-label').textContent = 'Offline · use saved POS'; document.querySelector('.workspace-status').classList.add('offline'); toast('Connection interrupted. Use Offline mode → Open saved POS if enabled, or reconnect before saving.', true); });
     window.addEventListener('posonly:offline-synced', () => { if (!state.cart.length && !state.pendingSale && !state.busy) { refresh().catch(() => {}); } });
+    window.addEventListener('posonly:offline-changed', async () => {
+        if (!state.data || state.busy || state.pendingSalePreparing || state.restoringPendingSale) { return; }
+        const previous = state.pendingSale?.idempotency_key;
+        try { await restorePendingSale(); if (previous !== state.pendingSale?.idempotency_key) { renderSection(); } }
+        catch (failure) { toast(failure.message, true); }
+    });
     window.addEventListener('online', () => { document.getElementById('connection-label').textContent = 'Reconnected · refresh to sync'; document.querySelector('.workspace-status').classList.remove('offline'); });
 
     setInterval(async () => {
