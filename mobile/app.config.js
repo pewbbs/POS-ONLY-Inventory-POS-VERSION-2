@@ -11,7 +11,7 @@ const testTransportSecurity = isolated ? {
   ...(testLanHost && target.hostname === testLanHost && target.protocol === 'http:' ? {
     NSExceptionDomains: { [testLanHost]: { NSExceptionAllowsInsecureHTTPLoads: true } },
   } : {}),
-} : null;
+} : { NSAllowsLocalNetworking: false, NSAllowsArbitraryLoads: false };
 
 module.exports = {
   expo: {
@@ -27,7 +27,8 @@ module.exports = {
       supportsTablet: true,
       infoPlist: {
         ITSAppUsesNonExemptEncryption: true,
-        ...(isolated ? { NSAppTransportSecurity: testTransportSecurity, NSLocalNetworkUsageDescription: 'Connect to the isolated POSONLY test server on this Mac.' } : {}),
+        NSAppTransportSecurity: testTransportSecurity,
+        ...(isolated ? { NSLocalNetworkUsageDescription: 'Connect to the isolated POSONLY test server on this Mac.' } : {}),
       },
     },
     android: {

@@ -53,7 +53,10 @@ test('release builds use only the fixed production HTTPS API and disable Android
     assert.equal(expo.android.package, 'com.posonly.mobile');
     assert.equal(expo.android.allowBackup, false);
     assert.equal(expo.ios.bundleIdentifier, 'com.posonly.mobile');
-    assert.equal(expo.ios.infoPlist.NSAppTransportSecurity, undefined);
+    assert.deepEqual(JSON.parse(JSON.stringify(expo.ios.infoPlist.NSAppTransportSecurity)), {
+      NSAllowsLocalNetworking: false,
+      NSAllowsArbitraryLoads: false,
+    });
     assert.equal(expo.ios.infoPlist.NSLocalNetworkUsageDescription, undefined);
     assert.doesNotThrow(() => runtime(expo.extra).assertClientEnvironment());
   }
