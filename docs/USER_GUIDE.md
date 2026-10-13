@@ -364,6 +364,28 @@ Open **Website content** to edit the available title, description, hero text, bu
 
 Test actual devices before opening your counter. Browser printing is included; direct printer commands and automatic cash-drawer opening are not.
 
+## Use the Android or iPhone app
+
+Use an approved POSONLY development or release build supplied by your operator. The isolated iOS Simulator and Android Emulator Release builds have passed native checks. These test builds use local test-server addresses and are not intended for customer phones. Physical-phone testing and app-store distribution are separate steps. Expo Go cannot open the encrypted POSONLY database and will refuse to fall back to unencrypted storage. The browser preview is restricted to an isolated test company.
+
+1. **Sign in with your own company email and password**, and give the phone a recognizable device name. The release app connects to the secure POSONLY API. If you normally sign in with Google, set a company password through the website's password-recovery flow first; native Google/Apple sign-in is not included.
+2. Open **Settings & help → Save fresh catalog** while connected before your shift. Check the company, staff role, stock location, and saved-catalog expiry. Each size/color variant has its own SKU and stock. Choose retail or wholesale prices before adding products to a cart.
+3. Find products in **Inventory** by name, SKU, or barcode, or use the phone's barcode camera when available. Add products, check quantities in **POS**, enter any discount and cash received, then review and confirm the cash sale once.
+4. A receipt marked **Pending** is saved on this phone. It is provisional until the server confirms it. Local available stock accounts for saved sales, but central stock and the server cash drawer have not changed yet.
+5. When connected again, leave an unsaved cart completed or cleared and select **Sync saved sales**. The idle foreground app also retries on reconnection. A confirmed receipt replaces the provisional number; the original location and cash-session reference are kept. Do not enter a pending sale again.
+6. Use **View receipt** to review the items, totals, and confirmation status. Receipt sharing/printing uses the platform's PDF/share tools. Company branding saved while connected can accompany an offline receipt; refresh the catalog while connected after the company changes its receipt profile. Test the actual phone and printer before counter use.
+7. Open and close cash sessions while connected. Confirm all queued cash sales before closing their original shift. Managers and administrators may make permitted online stock adjustments; cashiers can view stock and record cash sales.
+
+New cash sales stop when the catalog expires, the device login needs renewal, or the account's write access is paused. Earlier queued sales stay on the phone and can still be recovered with the original company user. The offline flow supports walk-in cash sales; returns, stock changes, purchases, card/wallet tenders, and subscription payments require their separate online workflows.
+
+If synchronization reports changed prices/tax, insufficient stock, or a changed cash session, ask an administrator to reconcile the original request. A stock or cash-session action whose result is unknown remains protected too. Use the original recovery action after reconnecting; do not erase its request or create a replacement key. A shift closed elsewhere with a different count can require manual administrator resolution. Keep the phone and its original queue available until review is complete.
+
+**Settings & help → Export queued sales backup** saves a private recovery copy. This file contains company sales data; exporting does not confirm, delete, or automatically import the requests. Do not uninstall the app, reset its storage, or discard the phone while it has unconfirmed sales. Signing out removes active inventory access and retains unresolved requests for their original company user. Sign back in on that phone to recover them.
+
+Use **Review signed-in devices** to check the device tokens for your own account, and **Sign out device** for a phone you no longer use. Sync its saved sales first. If local sign-out cannot confirm server revocation, revoke that device from another connected session. Password reset and staff access changes can revoke tokens; signing in again does not delete the original offline queue.
+
+For operators: the app uses Expo SDK 57, Node.js 22.23+, platform SecureStore, and SQLCipher storage. Typecheck, lint, and the mobile tests must pass before distributing a build. Isolated native QA uses a disposable backend at port 8092, `127.0.0.1` for iOS Simulator, and `10.0.2.2` for Android Emulator. Never use production records or payment keys for those checks. Local iOS generation/builds need a private project path without spaces and identical dependency versions. Keep normal Simulator signing enabled with `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-`; Xcode must inject the simulated Keychain entitlement into the executable. The iPhone 16e / iOS 26.2 Simulator passed Keychain login, SQLCipher protection, inventory and cash checkout, offline cold-start recovery, reconnection, exact retry after a lost confirmation, original-account recovery without exposing its queue to another company, and receipt PDF export. The Android API 36 emulator passed encrypted-store startup, barcode/variant and retail/wholesale selection, online cash checkout, offline cold-start recovery, automatic reconnection, and cashier/device controls. Stock and cash updated once per original sale, and all 19 protected record baselines matched. Physical camera scanning, actual printer behavior, physical-device signing and app-store distribution still require verification. The dependency audit also has unresolved transitive advisories that must be reviewed before production distribution.
+
 ## Quick troubleshooting
 
 | Problem | First steps |
@@ -383,7 +405,7 @@ Test actual devices before opening your counter. Browser printing is included; d
 This application stores its core transactions in the Laravel database. It is not a production cloud deployment by itself. The following require additional implementation or provider integration:
 
 - External e-commerce/marketplace synchronization and live stock push between browsers. Local channel catalog/order simulations and central reservations are implemented.
-- Offline sales and conflict resolution.
+- Automated conflict resolution for offline sales. Cached inventory and queued cash sales with reconnection are implemented; changed prices, shortages, and cash-session conflicts require original-request review.
 - Charging or refunding cards and wallets.
 - Live subscription checkout and recurring payment collection. Local plans, invoices, simulations, optional PayMongo test checkout/rechecks, access periods, and limits are implemented. Test records are not real paid subscriptions.
 - Sending supplier orders or messages automatically. Replenishment drafts and partial delivery history are implemented.

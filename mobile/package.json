@@ -1,0 +1,56 @@
+{
+  "name": "posonly-mobile",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "dependencies": {
+    "expo": "~57.0.28",
+    "expo-camera": "~57.0.6",
+    "expo-constants": "~57.0.21",
+    "expo-crypto": "~57.0.4",
+    "expo-file-system": "~57.0.7",
+    "expo-linking": "~57.0.12",
+    "expo-network": "~57.0.2",
+    "expo-print": "~57.0.2",
+    "expo-router": "~57.0.26",
+    "expo-secure-store": "~57.0.4",
+    "expo-sharing": "~57.0.23",
+    "expo-sqlite": "~57.0.4",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-reanimated": "4.5.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "react-native-web": "^0.21.2",
+    "react-native-worklets": "0.10.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "@types/react-test-renderer": "^19.3.0",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "~57.0.2",
+    "react-test-renderer": "19.2.3",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "node --dns-result-order=ipv4first node_modules/expo/bin/cli start --host localhost",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "node --dns-result-order=ipv4first node_modules/expo/bin/cli start --web --host localhost",
+    "typecheck": "tsc --noEmit",
+    "lint": "expo lint",
+    "test": "tsx --test tests/core.test.ts tests/core-storage.test.ts tests/actions.test.ts tests/receipt-branding.test.ts tests/sharing.test.ts tests/config.test.ts tests/runtime.test.ts",
+    "build:android": "expo run:android",
+    "build:ios": "expo run:ios",
+    "export": "expo export",
+    "e2e": "tsx --test tests/api-http.e2e.test.ts"
+  },
+  "overrides": {
+    "xcode": {
+      "uuid": "11.1.1"
+    }
+  },
+  "private": true
+}

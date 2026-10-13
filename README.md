@@ -100,9 +100,54 @@ Only static offline assets are cached by the service worker. Authenticated works
 
 When changing any file listed in `ASSETS` in `public/service-worker.js`, update that worker's `CACHE` hash/version suffix and publish it with the changed assets. The new worker removes previous POSONLY shell caches when activated. Cache upgrades must preserve IndexedDB sale queues; do not clear unsynchronized records to refresh application files.
 
-## Mobile API preparation
+## Android and iPhone app
 
-Laravel remains the authority for company data, authorization, prices, stock, cash sessions, and receipts. `routes/api.php` exposes `/api/v1` JSON endpoints for a future native app. The API does not include a native mobile interface, native Google/Apple sign-in, developer administration, or provider payment collection.
+`mobile/` contains the Expo SDK 57 / React Native application for Android and iPhone. It provides company inventory and variants, location and retail/wholesale selection, barcode search/camera scanning, walk-in cash POS, saved receipts, and an offline cash outbox with reconnection sync. Stock adjustments and opening/closing cash sessions require a connection and the account's permitted role. Laravel remains the authority for stock, pricing, tax, access, cash sessions, and final receipts.
+
+Release configuration fixes the API address to `https://posonly.com/api/v1`. Credentials are entered at sign-in; device bearer tokens are kept in Expo SecureStore, and owner-scoped catalog/queue records use SQLCipher-encrypted SQLite. The encryption key also stays in the platform credential store. A missing key or unsupported encryption fails closed without resetting saved sales. Android application backups are disabled. Do not put credentials into app configuration, source files, URLs, or screenshots.
+
+The app uses an existing company account's email and password. Native Google/Apple sign-in is not implemented. A company user who normally signs in with Google can use the website's password-recovery flow to set a company password before using the mobile app. The app does not collect card/wallet payments, process subscription payments, or expose developer administration.
+
+### Develop and verify the mobile app
+
+Use Node.js **22.23 or newer supported Node releases** with SDK-compatible installed packages. From `mobile/`:
+
+```sh
+npm ci
+npm run typecheck
+npm run lint
+npm test
+```
+
+The encrypted database requires a development or release native build with the configured `expo-sqlite` SQLCipher plugin. Expo Go does not provide this configuration; the app refuses to use an unencrypted fallback. Generated `ios/` and `android/` projects remain untracked and are regenerated from `app.config.js`.
+
+Prepare a disposable Laravel copy on **port 8092** with its own SQLite database, application key, fake company accounts, disabled payment/OAuth integrations, and blocked outbound requests before testing. Never point the integration suite at production or copy production credentials/data into it. The actual-client HTTP suite is opt-in and accepts only this local origin:
+
+```sh
+POSONLY_TEST_API_URL=http://127.0.0.1:8092 npm run e2e
+```
+
+For an isolated browser preview, use `POSONLY_BUILD_ENV=isolated` and `POSONLY_TEST_API_URL=http://127.0.0.1:8092/api/v1`, then run `npm run web -- --port 8081`. Its local Metro proxy sends `/api/v1` requests only to the isolated backend. Browser preview sessions are for fictitious accounts; production web preview is disabled.
+
+Use the same isolated build environment for native testing. An iPhone simulator uses `http://127.0.0.1:8092/api/v1`; an Android emulator uses `http://10.0.2.2:8092/api/v1` to reach the host's isolated server. Configure the Android SDK first. Boot the iOS simulator before running a native launch command. A physical phone needs a separately prepared reachable test backend; these loopback addresses do not refer to the developer's computer from a physical phone.
+
+Set `POSONLY_BUILD_ENV=production` explicitly when preparing a production build; this overrides an ignored local test `.env.local`. Check the generated configuration before signing it. Production uses `com.posonly.mobile`, HTTPS only, and disabled Android cleartext traffic; isolated builds use `com.posonly.mobile.test`. The native transport explicitly uses Expo's fetch implementation with redirect rejection, cookie omission, and no-store request headers.
+
+For local iOS builds, use a disposable project copy whose full path contains no spaces. Expo's generated constants build script failed when dependencies resolved through this repository's spaced path; a private copy with a physical dependency directory compiled successfully. Keep dependency versions identical and regenerate native projects rather than editing generated pod scripts or user shell profiles. Build the Simulator app with `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-` so Xcode injects its simulated Keychain application entitlement into the executable. Disabling signing prevents SecureStore from opening the Keychain; manually signing that unsigned artifact afterward does not add Xcode's required simulated entitlement section. Simulator ad hoc signing requires no paid developer account and does not prepare a build for physical devices or app-store distribution.
+
+Current QA includes normally signed arm64 Release builds tested on **iPhone 16e / iOS 26.2** and an **Android API 36 emulator**, **78 client tests**, and **eight actual HTTP lifecycle tests** using the isolated backend. iOS native checks passed for Keychain sign-in, SQLCipher storage rejecting reads without its key, inventory/barcode lookup, locations and pricing tiers, cash checkout, offline queue persistence across cold starts, reconnection, and exact retry after a committed response was lost. Offline sign-out retained the original user's queue, hid it from a different company, and recovered it after the original user signed in again. Native receipt PDF export was inspected for readable dates and totals. Android passed encrypted-store startup, barcode/variant and price-tier selection, cash checkout, offline cold-start durability, automatic reconnection, cashier controls, and owned-device token cleanup. Each queued sale changed the original location's stock and cash session once. The HTTP suite also covers stock/cash totals, revoked tokens, cashier permissions, and foreign-company/billing preservation; all 19 protected table baselines matched after native checks. These isolated artifacts use local emulator addresses and are not builds for customer phones. Physical-phone camera and printer behavior, physical-device release signing, and app-store distribution remain unverified.
+
+The current package audit still reports 21 transitive findings. A compatible scoped UUID override was applied for the Xcode project parser. The installed toolchain retains unpatched `braces`/`node-forge` advisories and an Expo Router URI-decoding dependency that needs a coordinated compatible update. Review these before distributing a production build; do not force npm's suggested major SDK downgrade.
+
+### Recover mobile cash sales
+
+Save a fresh catalog while connected before a shift. Its 24-hour signed period permits new cash sales while disconnected. The app durably saves the immutable request before showing a provisional receipt; central stock and the server drawer update only after confirmation. On reconnection, use the same company user and select **Sync saved sales**, or let the idle foreground app retry. Each retry keeps the original key, quote, cash amount, location, and shift.
+
+Sync before closing the original cash session. Price/tax changes, shortages, changed shifts, and access failures keep requests unresolved. An uncertain stock/cash-session action also stays protected and blocks a new checkout. If a shift was closed elsewhere with a different count, or a request cannot be reconciled automatically, keep the device and original request available for administrator review. Do not erase, re-key, duplicate, or reassign it to another shift. **Export queued sales backup** creates a private recovery file; it neither confirms sales nor provides an automatic import/resolution flow. Signing out retains unresolved records for their original company user.
+
+## Secure mobile API
+
+`routes/api.php` exposes the versioned `/api/v1` JSON API used by the app. The API does not provide native Google/Apple sign-in, developer administration, or provider payment collection.
 
 Create a device token by posting an existing company account's credentials to `/api/v1/auth/token`. Production requires HTTPS. Request example, using placeholders only:
 
@@ -170,6 +215,7 @@ Handle `401` by asking the user to sign in again; `403` denotes denied access, `
 - Browser/account-scoped held carts with current price and stock review on resume.
 - Opt-in device catalog caching and a cash-only offline queue with signed snapshot periods, explicit synchronization, exact quote/shift checks, and provisional records until server confirmation.
 - Versioned mobile API with finite, revocable, role-scoped Sanctum device tokens and company-scoped inventory/POS operations.
+- Expo Android/iPhone app with inventory, cash POS, encrypted device storage, immutable offline cash requests, reconnection recovery, receipts, and permitted online stock/cash-session actions; native distribution and device verification are separate release steps.
 - Draft/approved supplier purchase orders, partial delivery receiving, receipt history, approval, and outstanding-order cancellation.
 - Product/location/supplier replenishment rules that generate reviewable drafts while accounting for all outstanding quantities across suppliers.
 - Local trial and monthly/annual subscription records, invoices, simulated payment confirmation, next-renewal plan changes, active staff/location limits, expiry access control, and full-history invoice CSV export.
@@ -190,7 +236,7 @@ The same Laravel application supports local development and configured productio
 
 Local billing simulation uses no provider; PayMongo test checkout contacts its test API and collects no live payment. Configured production PayMongo live checkout collects real payments for subscription invoices only. Production preflight rejects test credentials/records and simulated billing/channel data, and requires the live provider configuration when checkout is enabled. Keep isolated test records and credentials out of production.
 
-Integrated POS payment collection/refunds, automatic subscription debits, external e-commerce sync/webhooks, supplier messaging, email invitation delivery, and full accounting require further integration. Offline purchases, returns, stock changes, card/wallet payments, and billing are not supported. Password recovery is implemented; its emails require a configured delivery service. A native mobile client must still be built against the prepared API.
+Integrated POS payment collection/refunds, automatic subscription debits, external e-commerce sync/webhooks, supplier messaging, email invitation delivery, and full accounting require further integration. Offline purchases, returns, stock changes, card/wallet payments, and billing are not supported. Password recovery is implemented; its emails require a configured delivery service. The native mobile app's store distribution, real-device checks, and native Google/Apple sign-in require further setup.
 
 Hardware support uses scanner keyboard input and browser printing. Direct printer commands, drawer control, and card-reader integration are not included. Test actual counter devices before live operation.
 
