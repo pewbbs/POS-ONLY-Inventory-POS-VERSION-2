@@ -1,13 +1,17 @@
+const { validateTestLanHost, validateIsolatedApiUrl } = require('./testServer');
+
 const isolated = process.env.POSONLY_BUILD_ENV === 'isolated';
-const apiUrl = isolated ? (process.env.POSONLY_TEST_API_URL || 'http://127.0.0.1:8092/api/v1') : 'https://posonly.com/api/v1';
+const testLanHost = isolated ? validateTestLanHost(process.env.POSONLY_TEST_LAN_HOST) : null;
+const apiUrl = isolated
+  ? validateIsolatedApiUrl(process.env.POSONLY_TEST_API_URL || 'http://127.0.0.1:8092/api/v1', testLanHost)
+  : 'https://posonly.com/api/v1';
 const target = new URL(apiUrl);
-if (target.username || target.password || target.search || target.hash || !['http:', 'https:'].includes(target.protocol)
-  || !['', '/', '/api/v1', '/api/v1/'].includes(target.pathname)) {
-  throw new Error('Use a credential-free POSONLY API address without query parameters.');
-}
-if (isolated && !['127.0.0.1', 'localhost', '10.0.2.2'].includes(target.hostname)) {
-  throw new Error('Isolated builds may only use the local test backend.');
-}
+const testTransportSecurity = isolated ? {
+  NSAllowsLocalNetworking: true,
+  ...(testLanHost && target.hostname === testLanHost && target.protocol === 'http:' ? {
+    NSExceptionDomains: { [testLanHost]: { NSExceptionAllowsInsecureHTTPLoads: true } },
+  } : {}),
+} : null;
 
 module.exports = {
   expo: {
@@ -23,7 +27,7 @@ module.exports = {
       supportsTablet: true,
       infoPlist: {
         ITSAppUsesNonExemptEncryption: true,
-        ...(isolated ? { NSAppTransportSecurity: { NSAllowsLocalNetworking: true }, NSLocalNetworkUsageDescription: 'Connect to the isolated POSONLY test server on this Mac.' } : {}),
+        ...(isolated ? { NSAppTransportSecurity: testTransportSecurity, NSLocalNetworkUsageDescription: 'Connect to the isolated POSONLY test server on this Mac.' } : {}),
       },
     },
     android: {
@@ -42,6 +46,6 @@ module.exports = {
       'expo-sharing',
       './withAndroidNetworkPolicy',
     ],
-    extra: { apiUrl, isolated },
+    extra: { apiUrl, isolated, ...(isolated && testLanHost ? { testLanHost } : {}) },
   },
 };
