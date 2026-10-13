@@ -41,6 +41,7 @@ module.exports = {
     web: { bundler: 'metro', favicon: './assets/favicon.png' },
     plugins: [
       'expo-router',
+      ['expo-build-properties', { ios: { enableSceneSupport: true } }],
       ['expo-secure-store', { configureAndroidBackup: true }],
       ['expo-sqlite', { useSQLCipher: true }],
       ['expo-camera', { cameraPermission: 'Scan product barcodes for POSONLY checkout.', recordAudioAndroid: false }],
