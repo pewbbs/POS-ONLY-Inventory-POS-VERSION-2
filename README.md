@@ -4,7 +4,7 @@
 ![Laravel 13](https://img.shields.io/badge/Laravel-13-FF2D20?logo=laravel&logoColor=white)
 ![Expo SDK 57](https://img.shields.io/badge/Expo_SDK-57-000020?logo=expo&logoColor=white)
 ![React Native](https://img.shields.io/badge/React_Native-0.86-61DAFB?logo=react&logoColor=black)
-![PayMongo](https://img.shields.io/badge/Billing-PayMongo-24B47E)
+![PayMongo](https://img.shields.io/badge/Billing-PayMongo-24B47E?style=flat)
 
 POSONLY is a cloud inventory and point-of-sale system for small shops in the Philippines. Staff can sell at the counter, receive supplier deliveries, count and transfer stock across locations, and review sales. It runs in the browser, works offline for cash sales, and comes with an Android and iPhone app.
 
